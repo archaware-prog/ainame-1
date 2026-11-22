@@ -15,10 +15,10 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = FULL_DEFAULT_SITE_SETTINGS;
 export const SEED_PAGES: CustomPage[] = [
   {
     id: 'page-about',
-    title: 'About KinoVault',
+    title: 'About AIname',
     slug: 'about',
     contentHtml:
-      '<h2>Curated Cinema, Restored &amp; Accessible</h2><p>KinoVault is a streaming library dedicated to independent feature films, serialized mystery dramas, documentary expeditions, and newly restored classics.</p><h3>Our Curation Standard</h3><ul><li>Multi-source high-definition playback and accessible subtitles</li><li>Editorial spotlists curated weekly for film enthusiasts</li><li>Flexible viewing across free, member, and monthly subscription tiers</li></ul>',
+      '<h2>Curated Cinema, Restored &amp; Accessible</h2><p>AIname is a streaming library dedicated to independent feature films, serialized mystery dramas, documentary expeditions, and newly restored classics.</p><h3>Our Curation Standard</h3><ul><li>Multi-source high-definition playback and accessible subtitles</li><li>Editorial spotlists curated weekly for film enthusiasts</li><li>Flexible viewing across free, member, and monthly subscription tiers</li></ul>',
     showContactForm: false,
     status: 'published',
     showInFooter: true,

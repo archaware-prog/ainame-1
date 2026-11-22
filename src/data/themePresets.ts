@@ -251,7 +251,7 @@ export const DEFAULT_I18N_LABELS: Record<string, Record<string, string>> = {
 };
 
 export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
-  siteName: 'KinoVault',
+  siteName: 'AIname',
   logoUrl: '',
   primaryColor: '#e50914',
   announcement: {
@@ -268,7 +268,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
   maintenanceMode: false,
   allowRegistration: true,
   footerLinks: [
-    { label: 'About KinoVault', href: '#/page/about' },
+    { label: 'About AIname', href: '#/page/about' },
     { label: 'Contact', href: '#/page/contact' },
     { label: 'FAQ', href: '#/page/faq' },
     { label: 'Terms', href: '#/page/terms' },
@@ -415,7 +415,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
         ],
       },
     ],
-    copyrightText: '© {year} KinoVault. All rights reserved.',
+    copyrightText: '© {year} AIname. All rights reserved.',
     disclaimerText: 'Streaming platform for licensed, original, and public-domain works.',
     socialIconStyle: 'outline',
     socialLinks: [
@@ -431,7 +431,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
     enabled: false,
     type: 'welcome',
     imageUrl: '',
-    title: 'Welcome to KinoVault',
+    title: 'Welcome to AIname',
     text: 'Explore curated films, original series, and archival 4K restorations.',
     buttonLabel: 'Explore Catalog',
     buttonHref: '#/movies',
@@ -440,7 +440,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
     endAt: '',
   },
   maintenance: {
-    message: 'KinoVault is undergoing a brief catalog upgrade. We will be back shortly.',
+    message: 'AIname is undergoing a brief catalog upgrade. We will be back shortly.',
     imageUrl: '',
     expectedReturnTime: '',
   },
@@ -466,7 +466,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
     enableKeyboardShortcuts: true,
     watermarkEnabled: false,
     watermarkMode: 'text',
-    watermarkText: 'KinoVault',
+    watermarkText: 'AIname',
     watermarkImageUrl: '',
     watermarkPosition: 'top-right',
     watermarkOpacity: 0.45,
@@ -479,7 +479,7 @@ export const FULL_DEFAULT_SITE_SETTINGS: SiteSettings = {
   seo: {
     metaTitleTemplate: '{title} | {siteName}',
     description:
-      'Stream curated independent films, public-domain classics, and original series on KinoVault.',
+      'Stream curated independent films, public-domain classics, and original series on AIname.',
     keywords: 'streaming, movies, series, cinema, independent film, 4k restorations',
     ogImageUrl: '',
     useTitlePosterForOg: true,

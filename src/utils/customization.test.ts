@@ -121,7 +121,7 @@ test('validateImportedSiteSettings validates schema before restoring JSON', () =
 });
 
 test('SEO helpers generate meta title, sitemap.xml, robots.txt, and JSON-LD', () => {
-  assert.equal(formatMetaTitle('{title} — {siteName}', 'Solaris Drift', 'KinoVault'), 'Solaris Drift — KinoVault');
+  assert.equal(formatMetaTitle('{title} — {siteName}', 'Solaris Drift', 'AIname'), 'Solaris Drift — AIname');
 
   const movie: MovieItem = {
     id: 'solaris-drift',
@@ -164,15 +164,15 @@ test('SEO helpers generate meta title, sitemap.xml, robots.txt, and JSON-LD', ()
     updatedAt: '2026-11-01T00:00:00Z',
   };
 
-  const sitemap = generateSitemapXml('https://kinovault.app/', [movie], [page]);
-  assert.ok(sitemap.includes('https://kinovault.app/#/movie/solaris-drift'));
-  assert.ok(sitemap.includes('https://kinovault.app/#/page/about'));
+  const sitemap = generateSitemapXml('https://ainame.app/', [movie], [page]);
+  assert.ok(sitemap.includes('https://ainame.app/#/movie/solaris-drift'));
+  assert.ok(sitemap.includes('https://ainame.app/#/page/about'));
 
-  const robots = generateRobotsTxt('https://kinovault.app/');
+  const robots = generateRobotsTxt('https://ainame.app/');
   assert.ok(robots.includes('Disallow: /admin.html'));
-  assert.ok(robots.includes('Sitemap: https://kinovault.app/sitemap.xml'));
+  assert.ok(robots.includes('Sitemap: https://ainame.app/sitemap.xml'));
 
-  const jsonLd = JSON.parse(buildMovieJsonLd(movie, 'KinoVault', 'https://kinovault.app'));
+  const jsonLd = JSON.parse(buildMovieJsonLd(movie, 'AIname', 'https://ainame.app'));
   assert.equal(jsonLd['@type'], 'Movie');
   assert.equal(jsonLd.name, 'Solaris Drift');
 });

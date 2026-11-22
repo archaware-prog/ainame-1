@@ -187,8 +187,8 @@ export function applySiteCustomizationToDom(
     upsertLink('kv-dynamic-apple-icon', 'apple-touch-icon', branding.appIconUrl, { sizes: '180x180' });
     const dynamicManifest = {
       id: '/',
-      name: settings.siteName || 'KinoVault',
-      short_name: (settings.siteName || 'KinoVault').slice(0, 14),
+      name: settings.siteName || 'AIname',
+      short_name: (settings.siteName || 'AIname').slice(0, 14),
       description: seo?.description || branding.tagline || '',
       theme_color: bg,
       background_color: bg,

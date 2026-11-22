@@ -405,7 +405,7 @@ export function VideoPlayer({
     }
   }, [currentTime, isPlaying, activeVastAd, activeOverlayAd, isLockedPremium, adSettings, vastAds, adContentType, movie.id, episode?.id, adDevice, user, isYouTubeMode]);
 
-  // Initialize privacy-enhanced YouTube player with custom KinoVault controls & shields
+  // Initialize privacy-enhanced YouTube player with custom AIname controls & shields
   useEffect(() => {
     if (isLockedPremium || !isYouTubeMode || !youtubeVideoId) return;
     const host = ytContainerRef.current;
@@ -1365,7 +1365,7 @@ export function VideoPlayer({
                       {episode ? `${movie.title} — ${episode.title}` : movie.title}
                     </p>
                     <p className="mt-1 text-[11px] text-zinc-400">
-                      Preparing KinoVault stream...
+                      Preparing AIname stream...
                     </p>
                   </div>
                 )}
@@ -1501,7 +1501,7 @@ export function VideoPlayer({
                   />
                 ) : (
                   <span className="rounded bg-black/45 px-2.5 py-1 font-display text-xs font-bold tracking-wider text-white">
-                    {playerConfig.watermarkText || 'KinoVault'}
+                    {playerConfig.watermarkText || 'AIname'}
                   </span>
                 )}
               </div>

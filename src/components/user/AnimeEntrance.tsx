@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { SkipForward } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { SkipForward, Volume2, VolumeX } from 'lucide-react';
 import type { BrandingSettings } from '../../types/streaming';
 
 interface AnimeEntranceProps {
@@ -10,19 +10,7 @@ interface AnimeEntranceProps {
   onComplete: () => void;
 }
 
-const SPEED_RAYS = Array.from({ length: 28 }, (_, idx) => ({
-  angle: idx * (360 / 28),
-  length: idx % 3 === 0 ? 540 : idx % 2 === 0 ? 420 : 320,
-  width: idx % 4 === 0 ? 2.5 : 1.3,
-}));
-
-const PETAL_PARTICLES = Array.from({ length: 18 }, (_, idx) => ({
-  id: idx,
-  left: `${(idx * 17 + 6) % 94}%`,
-  top: `${(idx * 23 + 10) % 88}%`,
-  size: 8 + (idx % 4) * 3,
-  delay: `${(idx % 6) * 0.14}s`,
-}));
+const INTRO_VIDEO_SRC = '/assets/aistudio/AIname-Director-3D-Intro_70bf0bd6.mp4';
 
 export function AnimeEntrance({
   open,
@@ -32,12 +20,36 @@ export function AnimeEntrance({
   onComplete,
 }: AnimeEntranceProps) {
   const [splitting, setSplitting] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const completedRef = useRef(false);
+  const fadeTimerRef = useRef<number | null>(null);
+
+  const finishIntro = useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    setSplitting(true);
+    if (fadeTimerRef.current !== null) {
+      window.clearTimeout(fadeTimerRef.current);
+    }
+    fadeTimerRef.current = window.setTimeout(() => {
+      onComplete();
+    }, 450);
+  }, [onComplete]);
 
   useEffect(() => {
     if (!open) {
+      completedRef.current = false;
       setSplitting(false);
+      if (fadeTimerRef.current !== null) {
+        window.clearTimeout(fadeTimerRef.current);
+        fadeTimerRef.current = null;
+      }
       return;
     }
+
+    completedRef.current = false;
+    setSplitting(false);
 
     if (branding?.splashEnabled === false || reducedMotion) {
       onComplete();
@@ -52,155 +64,109 @@ export function AnimeEntrance({
       return;
     }
 
-    const splitTimer = window.setTimeout(() => setSplitting(true), 2300);
-    const doneTimer = window.setTimeout(() => onComplete(), 2950);
+    const video = videoRef.current;
+    if (video) {
+      video.currentTime = 0;
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+          // If autoplay is blocked even while muted, fall back to a brief timer
+        });
+      }
+    }
+
+    // Safety fallback in case media playback stalls or fails silently
+    const safetyTimer = window.setTimeout(() => {
+      finishIntro();
+    }, 16000);
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        onComplete();
+        finishIntro();
       }
     };
     window.addEventListener('keydown', onKeyDown);
 
     return () => {
-      window.clearTimeout(splitTimer);
-      window.clearTimeout(doneTimer);
+      window.clearTimeout(safetyTimer);
       window.removeEventListener('keydown', onKeyDown);
+      if (fadeTimerRef.current !== null) {
+        window.clearTimeout(fadeTimerRef.current);
+        fadeTimerRef.current = null;
+      }
     };
-  }, [open, onComplete, branding?.splashEnabled, reducedMotion]);
+  }, [open, onComplete, finishIntro, branding?.splashEnabled, reducedMotion]);
 
   if (!open || branding?.splashEnabled === false || reducedMotion) return null;
 
-  const splashBg = branding?.splashBgColor || '#07070b';
-  const splashAnim = branding?.splashAnimation || 'fade';
+  const splashBg =
+    branding?.splashBgColor && branding.splashBgColor !== '#07070b'
+      ? branding.splashBgColor
+      : '#1a0704';
 
   return (
     <div
-      className={`fixed inset-0 z-[100] overflow-hidden select-none transition-opacity duration-500 ${
+      className={`fixed inset-0 z-[100] flex items-center justify-center overflow-hidden select-none transition-opacity duration-500 ${
         splitting ? 'pointer-events-none opacity-0' : 'opacity-100'
       }`}
       style={{ backgroundColor: splashBg }}
       role="dialog"
       aria-modal="true"
-      aria-label="Opening cinema sequence"
-      onClick={onComplete}
+      aria-label={`${siteName || 'AIname'} opening intro`}
+      onClick={finishIntro}
     >
-      {/* Seamless Anime Backdrop + Twin Curtain Exit */}
-      <div
-        className={`absolute inset-0 transition-transform duration-700 ease-[cubic-bezier(0.76,0,0.24,1)] ${
-          splitting ? 'scale-110' : 'scale-100'
+      <video
+        ref={videoRef}
+        src={INTRO_VIDEO_SRC}
+        autoPlay
+        muted={muted}
+        playsInline
+        preload="auto"
+        onEnded={finishIntro}
+        onError={() => onComplete()}
+        className={`h-full w-full object-contain md:object-cover transition-transform duration-500 ${
+          splitting ? 'scale-105' : 'scale-100'
         }`}
-        style={{ backgroundColor: splashBg }}
-      >
-        <img
-          src="/src/assets/images/anime_entrance_hero_1794831916481.jpg"
-          alt=""
-          aria-hidden="true"
-          referrerPolicy="no-referrer"
-          className="kv-anime-backdrop h-full w-full object-cover object-center opacity-70"
-        />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/65 via-black/30 to-black/85" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_25%,rgba(7,7,11,0.82)_100%)]" />
-      </div>
+      />
 
-      {/* Radial Anime Speed Lines */}
-      <svg
-        viewBox="-600 -600 1200 1200"
-        aria-hidden="true"
-        className="kv-anime-rays pointer-events-none absolute inset-0 h-full w-full object-cover mix-blend-screen"
-      >
-        {SPEED_RAYS.map((ray, i) => (
-          <line
-            key={i}
-            x1={Math.cos((ray.angle * Math.PI) / 180) * 145}
-            y1={Math.sin((ray.angle * Math.PI) / 180) * 145}
-            x2={Math.cos((ray.angle * Math.PI) / 180) * (145 + ray.length)}
-            y2={Math.sin((ray.angle * Math.PI) / 180) * (145 + ray.length)}
-            stroke={i % 3 === 0 ? '#ef4444' : '#ffffff'}
-            strokeOpacity={i % 3 === 0 ? 0.72 : 0.36}
-            strokeWidth={ray.width}
-          />
-        ))}
-      </svg>
+      {/* Top/Bottom subtle controls scrim */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/45 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
 
-      {/* Floating Anime Sakura / Ember Petals */}
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-        {PETAL_PARTICLES.map((p) => (
-          <span
-            key={p.id}
-            style={{
-              left: p.left,
-              top: p.top,
-              width: p.size,
-              height: p.size * 0.65,
-              animationDelay: p.delay,
-            }}
-            className="kv-anime-petal absolute rounded-tl-full rounded-br-full bg-gradient-to-br from-rose-200 via-rose-400 to-red-600 shadow-[0_0_10px_rgba(244,63,94,0.65)]"
-          />
-        ))}
-      </div>
-
-      {/* Katana / Comet Energy Slash + Impact Shockwave */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex items-center justify-center"
-      >
-        <div className="kv-anime-shockwave h-64 w-64 rounded-full border-2 border-rose-400/80 shadow-[0_0_45px_rgba(229,9,20,0.7)] sm:h-96 sm:w-96" />
-        <div className="kv-anime-slash absolute h-1.5 w-[135vw] origin-center bg-gradient-to-r from-transparent via-white to-transparent shadow-[0_0_26px_5px_rgba(229,9,20,0.95)]" />
-      </div>
-
-      {/* Center Title Kinetic Slam */}
-      <div
-        className={`kv-anime-title pointer-events-none relative z-10 flex h-full flex-col items-center justify-center px-6 text-center text-white transition-transform duration-500 ${
-          splitting ? 'scale-110' : 'scale-100'
-        }`}
-      >
-        <p className="font-mono text-xs font-semibold tracking-[0.36em] text-rose-300 uppercase drop-shadow">
-          Opening Premiere
-        </p>
-
-        {branding?.splashLogoUrl ? (
-          <img
-            src={branding.splashLogoUrl}
-            alt={siteName}
-            className={`mt-4 max-h-24 w-auto object-contain drop-shadow-[0_8px_32px_rgba(0,0,0,0.9)] ${
-              splashAnim === 'pulse' ? 'animate-pulse' : ''
-            }`}
-          />
-        ) : (
-          <h1
-            className={`mt-3 font-display text-5xl font-bold tracking-tight drop-shadow-[0_8px_32px_rgba(0,0,0,0.9)] sm:text-7xl ${
-              splashAnim === 'pulse' ? 'animate-pulse' : ''
-            }`}
-          >
-            {siteName}
-          </h1>
-        )}
-
-        {splashAnim === 'spinner' && (
-          <div className="mt-4 h-7 w-7 animate-spin rounded-full border-2 border-white/25 border-t-[var(--kv-accent,#e50914)]" />
-        )}
-
-        <div className="kv-anime-rule mt-4 h-0.5 w-44 origin-center bg-gradient-to-r from-transparent via-[var(--kv-accent,#e50914)] to-transparent" />
-        <p className="mt-3 text-xs font-medium text-zinc-100 drop-shadow sm:text-sm">
-          {branding?.tagline || 'Curated films, series, and theatrical stories'}
-        </p>
-      </div>
-
-      {/* Skip Intro Control */}
+      {/* Audio & Skip Intro Controls */}
       {!splitting && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onComplete();
-          }}
-          className="absolute right-5 bottom-6 z-20 inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-white/25 bg-black/65 px-4 py-2 text-xs font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/15 sm:top-6 sm:bottom-auto"
-        >
-          <span>Skip Intro</span>
-          <SkipForward className="h-3.5 w-3.5" />
-        </button>
+        <div className="absolute right-5 bottom-6 z-20 flex items-center gap-2.5 sm:top-6 sm:bottom-auto">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMuted((prev) => {
+                const next = !prev;
+                if (videoRef.current) {
+                  videoRef.current.muted = next;
+                }
+                return next;
+              });
+            }}
+            aria-label={muted ? 'Unmute intro audio' : 'Mute intro audio'}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-white/25 bg-black/65 px-3 py-2 text-xs font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/15"
+          >
+            {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              finishIntro();
+            }}
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-white/25 bg-black/65 px-4 py-2 text-xs font-semibold text-white backdrop-blur-md transition-colors hover:bg-white/15"
+          >
+            <span>Skip Intro</span>
+            <SkipForward className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
     </div>
   );

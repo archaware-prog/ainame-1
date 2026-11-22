@@ -37,9 +37,9 @@ export default defineConfig(() => {
         },
         manifest: {
           id: '/',
-          name: 'KinoVault',
-          short_name: 'KinoVault',
-          description: 'Stream curated independent films, public-domain classics, and original series on KinoVault.',
+          name: 'AIname',
+          short_name: 'AIname',
+          description: 'Stream curated independent films, public-domain classics, and original series on AIname.',
           theme_color: '#0b0b0f',
           background_color: '#0b0b0f',
           display: 'standalone',

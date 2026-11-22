@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import {
   Activity,
   ArrowDown,
@@ -9,6 +10,7 @@ import {
   Copy,
   Crown,
   Database,
+  DollarSign,
   Download,
   Edit3,
   Eye,
@@ -21,7 +23,10 @@ import {
   Menu,
   MessageSquare,
   Moon,
+  Newspaper,
   Plus,
+  Receipt,
+  RefreshCw,
   Search,
   Settings as SettingsIcon,
   ShieldAlert,
@@ -37,7 +42,6 @@ import {
 import {
   auth,
   BOOTSTRAPPED_ADMIN_EMAIL,
-  deleteAdminUserDoc,
   deleteBannerDoc,
   deleteCommentDoc,
   deleteContactMessageDoc,
@@ -60,11 +64,22 @@ import {
   syncUserProfileOnLogin,
   testFirestoreConnection,
   toggleCommentVisibility,
-  updateAdminUserDoc,
   updateContactMessageStatus,
   updateReportStatus,
   uploadFileWithProgress,
 } from './lib/firebase';
+import {
+  deleteAdminUserBatch,
+  exportUsersCsvAndLog,
+  fetchAdminAggregateMetrics,
+  fetchUsersPage,
+  subscribeToPendingOrders,
+  subscribeToRecentPaidSales,
+  updateAdminUserBatch,
+  updatePlanPricingBatch,
+  updateTitleStatusBatch,
+  type AdminAggregateSnapshot,
+} from './lib/ordersFirebase';
 import {
   DEFAULT_SITE_SETTINGS,
   SEED_BANNERS,
@@ -94,34 +109,39 @@ import type {
   CustomPage,
   GenreItem,
   MovieItem,
+  OrderItem,
   ReportItem,
   SiteSettings,
   SubscriptionPlan,
+  TitleStatus,
   UserProfile,
   VastAdItem,
 } from './types/streaming';
 import {
   calculateDashboardStats,
-  exportUsersToCsv,
   formatCompactNumber,
   formatMonthlyPrice,
   formatRelativeTime,
   slugify,
   validateSubscriptionPlanDraft,
 } from './utils/catalog';
-import { ConfirmDialog } from './components/ui/Modal';
+import { formatCurrencyAmount, hasMaxTwoDecimals } from './utils/orders';
+import { ConfirmDialog, Modal } from './components/ui/Modal';
 import { ToastProvider, useToast } from './components/ui/Toast';
 import { AdManagementHub, type AdsSubSection } from './components/admin/AdManagementHub';
 import { AdUnlockAdminHub } from './components/admin/AdUnlockAdminHub';
 import { AdminCharts } from './components/admin/AdminCharts';
+import { BlogManager } from './components/admin/BlogManager';
 import { CustomizationHub } from './components/admin/CustomizationHub';
 import { EpisodesManager } from './components/admin/EpisodesManager';
 import { MovieFormModal } from './components/admin/MovieFormModal';
+import { OrdersManager } from './components/admin/OrdersManager';
 
 type AdminTab =
   | 'dashboard'
   | 'movies'
   | 'subscriptions'
+  | 'orders'
   | 'episodes'
   | 'genres'
   | 'banners'
@@ -132,6 +152,7 @@ type AdminTab =
   | 'ads_settings'
   | 'ads_reports'
   | 'users'
+  | 'blog'
   | 'comments'
   | 'reports'
   | 'settings'
@@ -176,6 +197,16 @@ function AdminShell() {
   const [adEvents, setAdEvents] = useState<AdEventItem[]>([]);
   const [adSettings, setAdSettings] = useState<AdGlobalSettings>(DEFAULT_AD_SETTINGS);
 
+  // Live aggregate metrics & recent sales
+  const [liveMetrics, setLiveMetrics] = useState<AdminAggregateSnapshot | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [recentSales, setRecentSales] = useState<OrderItem[]>([]);
+  const [recentSalesLoading, setRecentSalesLoading] = useState(false);
+  const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
+  const metricsDebounceRef = useRef<number | null>(null);
+  const initialSalesSnapSkipped = useRef(false);
+  const initialPendingSnapSkipped = useRef(false);
+
   // Movies table state
   const [movieSearch, setMovieSearch] = useState('');
   const [movieTypeFilter, setMovieTypeFilter] = useState<'all' | 'movie' | 'series'>('all');
@@ -184,6 +215,9 @@ function AdminShell() {
   const [movieModalOpen, setMovieModalOpen] = useState(false);
   const [editingMovie, setEditingMovie] = useState<MovieItem | null>(null);
   const [deletingMovie, setDeletingMovie] = useState<MovieItem | null>(null);
+  const [statusModalMovie, setStatusModalMovie] = useState<MovieItem | null>(null);
+  const [statusModalValue, setStatusModalValue] = useState<TitleStatus>('published');
+  const [savingTitleStatus, setSavingTitleStatus] = useState(false);
 
   // Subscriptions manager state
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
@@ -196,6 +230,12 @@ function AdminShell() {
   const [planIsActive, setPlanIsActive] = useState(true);
   const [planErrors, setPlanErrors] = useState<Record<string, string>>({});
   const [savingPlan, setSavingPlan] = useState(false);
+  const [pricingPlan, setPricingPlan] = useState<SubscriptionPlan | null>(null);
+  const [pricingAmount, setPricingAmount] = useState('9.99');
+  const [pricingCurrency, setPricingCurrency] = useState('USD');
+  const [pricingActive, setPricingActive] = useState(true);
+  const [savingPricing, setSavingPricing] = useState(false);
+  const [deletingPlan, setDeletingPlan] = useState<SubscriptionPlan | null>(null);
 
   // Genres form state
   const [newGenreName, setNewGenreName] = useState('');
@@ -204,10 +244,20 @@ function AdminShell() {
   const [bannerMovieId, setBannerMovieId] = useState('');
   const [bannerImageUrl, setBannerImageUrl] = useState('');
 
-  // Users filters
+  // Users cursor-paginated state
   const [userSearch, setUserSearch] = useState('');
   const [userPlanFilter, setUserPlanFilter] = useState<'all' | 'free' | 'premium'>('all');
   const [userRoleFilter, setUserRoleFilter] = useState<'all' | 'user' | 'admin'>('all');
+  const [usersCursor, setUsersCursor] = useState<QueryDocumentSnapshot | null>(null);
+  const [usersHasMore, setUsersHasMore] = useState(false);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersLoadingMore, setUsersLoadingMore] = useState(false);
+  const [exportingUsersCsv, setExportingUsersCsv] = useState(false);
+  const [pendingUserAction, setPendingUserAction] = useState<{
+    kind: 'plan' | 'role' | 'status' | 'delete';
+    user: UserProfile;
+  } | null>(null);
+  const [userActionBusy, setUserActionBusy] = useState(false);
 
   // Reports filter
   const [reportFilter, setReportFilter] = useState<'all' | 'open' | 'resolved'>('all');
@@ -233,6 +283,47 @@ function AdminShell() {
     }
   }, [settings.primaryColor]);
 
+  const refreshLiveMetrics = useCallback(async () => {
+    setMetricsLoading(true);
+    try {
+      const snap = await fetchAdminAggregateMetrics();
+      setLiveMetrics(snap);
+      setPendingOrdersCount(snap.pendingOrdersCount);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed to refresh dashboard metrics.', 'error');
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [notify]);
+
+  const scheduleMetricsRefresh = useCallback(() => {
+    if (metricsDebounceRef.current) {
+      window.clearTimeout(metricsDebounceRef.current);
+    }
+    metricsDebounceRef.current = window.setTimeout(() => {
+      void refreshLiveMetrics();
+    }, 400);
+  }, [refreshLiveMetrics]);
+
+  const loadFirstUsersPage = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const page = await fetchUsersPage({
+        roleFilter: userRoleFilter,
+        planFilter: userPlanFilter,
+        cursor: null,
+        pageSize: 25,
+      });
+      setUsers(page.items);
+      setUsersCursor(page.lastDoc);
+      setUsersHasMore(page.hasMore);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed to load members.', 'error');
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [userRoleFilter, userPlanFilter, notify]);
+
   const loadAllAdmin = async () => {
     setLoadingData(true);
     try {
@@ -244,7 +335,6 @@ function AdminShell() {
       setGenres(data.genres.length > 0 ? data.genres : SEED_GENRES);
       setBanners(data.banners.length > 0 ? data.banners : SEED_BANNERS);
       setPlans(data.plans.length > 0 ? data.plans : SEED_PLANS);
-      setUsers(data.users);
       setComments(data.comments);
       setReports(data.reports);
       setPages(data.pages.length > 0 ? data.pages : SEED_PAGES);
@@ -272,6 +362,9 @@ function AdminShell() {
       setAuthUser(u);
       if (!u) {
         setAdminProfile(null);
+        setLiveMetrics(null);
+        setRecentSales([]);
+        setUsers([]);
         setAuthReady(true);
         return;
       }
@@ -289,7 +382,7 @@ function AdminShell() {
         setAccessDeniedMsg('');
         setAdminProfile(prof);
         setAuthReady(true);
-        await loadAllAdmin();
+        await Promise.all([loadAllAdmin(), refreshLiveMetrics()]);
       } catch (err) {
         setAccessDeniedMsg(
           err instanceof Error ? err.message : 'Unable to verify administrator role.'
@@ -299,6 +392,73 @@ function AdminShell() {
     });
     return () => unsub();
   }, []);
+
+  // Load cursor-paginated users whenever admin is verified or filters change
+  useEffect(() => {
+    if (!authUser || !adminProfile) return;
+    void loadFirstUsersPage();
+  }, [authUser, adminProfile, loadFirstUsersPage]);
+
+  // Real-time listeners (last 5 paid orders + pending orders count) & 60s visible polling
+  useEffect(() => {
+    if (!authUser || !adminProfile) return;
+    initialSalesSnapSkipped.current = false;
+    initialPendingSnapSkipped.current = false;
+    setRecentSalesLoading(true);
+
+    const unsubSales = subscribeToRecentPaidSales(
+      (items) => {
+        setRecentSales(items);
+        setRecentSalesLoading(false);
+        if (!initialSalesSnapSkipped.current) {
+          initialSalesSnapSkipped.current = true;
+          return;
+        }
+        scheduleMetricsRefresh();
+      },
+      (err) => {
+        setRecentSalesLoading(false);
+        notify(err.message, 'error');
+      }
+    );
+
+    const unsubPending = subscribeToPendingOrders(
+      (count) => {
+        setPendingOrdersCount(count);
+        if (!initialPendingSnapSkipped.current) {
+          initialPendingSnapSkipped.current = true;
+          return;
+        }
+        scheduleMetricsRefresh();
+      },
+      (err) => {
+        notify(err.message, 'error');
+      }
+    );
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshLiveMetrics();
+      }
+    }, 60_000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshLiveMetrics();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      unsubSales();
+      unsubPending();
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (metricsDebounceRef.current) {
+        window.clearTimeout(metricsDebounceRef.current);
+      }
+    };
+  }, [authUser, adminProfile, scheduleMetricsRefresh, refreshLiveMetrics, notify]);
 
   const stats = useMemo(
     () => calculateDashboardStats(movies, users, reports),
@@ -365,7 +525,7 @@ function AdminShell() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="h-3 w-3 rounded-sm bg-[var(--kv-accent,#e50914)]" />
-              <span className="font-display text-lg font-bold">KinoVault Admin</span>
+              <span className="font-display text-lg font-bold">AIname Admin</span>
             </div>
             <button
               type="button"
@@ -402,7 +562,9 @@ function AdminShell() {
                 try {
                   await signInWithGooglePopup();
                 } catch (err) {
-                  setAccessDeniedMsg(err instanceof Error ? err.message : 'Google login failed.');
+                  setAccessDeniedMsg(
+                    err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+                  );
                 } finally {
                   setLoginBusy(false);
                 }
@@ -427,7 +589,9 @@ function AdminShell() {
                 try {
                   await signInWithEmail(loginEmail.trim(), loginPassword);
                 } catch (err) {
-                  setAccessDeniedMsg(err instanceof Error ? err.message : 'Sign-in failed.');
+                  setAccessDeniedMsg(
+                    err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+                  );
                 } finally {
                   setLoginBusy(false);
                 }
@@ -498,6 +662,12 @@ function AdminShell() {
       icon: <Crown className="h-4 w-4" />,
       badge: plans.filter((p) => p.isActive).length || undefined,
     },
+    {
+      id: 'orders',
+      label: 'Orders',
+      icon: <Receipt className="h-4 w-4" />,
+      badge: pendingOrdersCount || liveMetrics?.pendingOrdersCount || undefined,
+    },
     { id: 'episodes', label: 'Episodes', icon: <Layers className="h-4 w-4" /> },
     { id: 'genres', label: 'Genres', icon: <Tag className="h-4 w-4" /> },
     { id: 'banners', label: 'Banners', icon: <ImageIcon className="h-4 w-4" /> },
@@ -525,6 +695,7 @@ function AdminShell() {
     { id: 'ads_settings', label: 'Ad Settings', icon: <SettingsIcon className="h-4 w-4" />, group: 'Advertising' },
     { id: 'ads_reports', label: 'Ad Reports', icon: <Download className="h-4 w-4" />, group: 'Advertising' },
     { id: 'users', label: 'Users', icon: <Users className="h-4 w-4" /> },
+    { id: 'blog', label: 'Blog', icon: <Newspaper className="h-4 w-4" /> },
     { id: 'comments', label: 'Comments', icon: <MessageSquare className="h-4 w-4" /> },
     {
       id: 'reports',
@@ -558,7 +729,7 @@ function AdminShell() {
       }
     }
     setSelectedMovieIds(new Set());
-    await loadAllAdmin();
+    await Promise.all([loadAllAdmin(), refreshLiveMetrics()]);
     notify(`Bulk action "${action}" completed for ${targets.length} titles`, 'success');
   };
 
@@ -698,10 +869,24 @@ function AdminShell() {
                 <div>
                   <h2 className="font-display text-xl font-bold">Platform Overview</h2>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Real-time metrics across catalog, members, and moderation queues
+                    Real-time metrics across catalog, members, revenue, and orders
+                    {liveMetrics?.lastUpdatedAt && (
+                      <span className="ml-2 text-zinc-400">
+                        · Updated {formatRelativeTime(liveMetrics.lastUpdatedAt)}
+                      </span>
+                    )}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={metricsLoading}
+                    onClick={() => void refreshLiveMetrics()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${metricsLoading ? 'animate-spin' : ''}`} />
+                    Refresh Metrics
+                  </button>
                   <button
                     type="button"
                     disabled={seeding}
@@ -709,7 +894,7 @@ function AdminShell() {
                       setSeeding(true);
                       try {
                         await seedCatalogToFirestore(adminProfile.uid);
-                        await loadAllAdmin();
+                        await Promise.all([loadAllAdmin(), refreshLiveMetrics()]);
                         notify('Sample catalog seeded to Firestore', 'success');
                       } finally {
                         setSeeding(false);
@@ -734,48 +919,177 @@ function AdminShell() {
                 </div>
               </div>
 
-              {/* KPI Grid */}
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-7">
-                {[
-                  { label: 'Movies', val: stats.totalMovies },
-                  { label: 'Series', val: stats.totalSeries },
-                  { label: 'Total Users', val: stats.totalUsers },
-                  { label: 'Plus Users', val: stats.premiumUsers },
-                  { label: 'Total Views', val: formatCompactNumber(stats.totalViews) },
-                  { label: 'Open Reports', val: stats.openReports },
-                  { label: 'New (7d)', val: stats.newUsersLast7Days },
-                ].map((kpi) => (
-                  <div
-                    key={kpi.label}
-                    className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-[#13131c]"
-                  >
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{kpi.label}</p>
-                    <p className="font-mono-tabular mt-1.5 text-2xl font-bold">{kpi.val}</p>
-                  </div>
-                ))}
+              {/* Live KPI Grid */}
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                {metricsLoading && !liveMetrics ? (
+                  Array.from({ length: 6 }).map((_, idx) => (
+                    <div
+                      key={idx}
+                      className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-[#13131c]"
+                    >
+                      <div className="h-3 w-20 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                      <div className="mt-3 h-7 w-16 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                      <div className="mt-2 h-2.5 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+                    </div>
+                  ))
+                ) : (
+                  [
+                    {
+                      label: 'Published Titles',
+                      val: liveMetrics
+                        ? liveMetrics.publishedTitles
+                        : movies.filter((m) => m.status === 'published').length,
+                      sub: `${movies.length} total in catalog`,
+                      targetTab: 'movies' as AdminTab,
+                    },
+                    {
+                      label: 'Total Students',
+                      val: liveMetrics ? liveMetrics.totalStudents : stats.totalUsers,
+                      sub: `+${liveMetrics ? liveMetrics.newStudents7d : stats.newUsersLast7Days} new (7d)`,
+                      targetTab: 'users' as AdminTab,
+                    },
+                    {
+                      label: 'Total Revenue',
+                      val: formatCurrencyAmount(
+                        liveMetrics?.totalRevenue ?? 0,
+                        liveMetrics?.primaryCurrency ?? 'USD'
+                      ),
+                      sub: `Refunded: ${formatCurrencyAmount(
+                        liveMetrics?.refundedTotal ?? 0,
+                        liveMetrics?.primaryCurrency ?? 'USD'
+                      )}`,
+                      targetTab: 'orders' as AdminTab,
+                    },
+                    {
+                      label: 'New Orders Today',
+                      val: liveMetrics?.newOrdersToday ?? 0,
+                      sub: `${pendingOrdersCount} awaiting review`,
+                      targetTab: 'orders' as AdminTab,
+                    },
+                    {
+                      label: 'Total Views',
+                      val: formatCompactNumber(stats.totalViews),
+                      sub: `${liveMetrics?.premiumUsersCount ?? stats.premiumUsers} Plus members`,
+                      targetTab: 'movies' as AdminTab,
+                    },
+                    {
+                      label: 'Open Reports',
+                      val: stats.openReports,
+                      sub: 'Playback & content queue',
+                      targetTab: 'reports' as AdminTab,
+                    },
+                  ].map((kpi) => (
+                    <button
+                      key={kpi.label}
+                      type="button"
+                      onClick={() => setActiveTab(kpi.targetTab)}
+                      className="rounded-xl border border-zinc-200 bg-white p-4 text-left transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-[#13131c] dark:hover:border-zinc-600"
+                    >
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">{kpi.label}</p>
+                      <p className="font-mono-tabular mt-1.5 text-2xl font-bold">{kpi.val}</p>
+                      <p className="mt-1 truncate text-[11px] text-zinc-400">{kpi.sub}</p>
+                    </button>
+                  ))
+                )}
               </div>
 
-              <AdminCharts movies={movies} users={users} />
+              <AdminCharts
+                movies={movies}
+                users={users}
+                memberCounts={
+                  liveMetrics
+                    ? {
+                        free: liveMetrics.freeUsersCount,
+                        premium: liveMetrics.premiumUsersCount,
+                      }
+                    : undefined
+                }
+              />
 
-              {/* Recent Activity */}
-              <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-[#13131c]">
-                <h3 className="mb-3 font-display text-sm font-semibold">Recent Admin Activity</h3>
-                {logs.length === 0 ? (
-                  <p className="text-xs text-zinc-500">
-                    No activity logged yet. Seed the catalog or edit a title to record audit events.
-                  </p>
-                ) : (
-                  <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                    {logs.slice(0, 6).map((log) => (
-                      <div key={log.id} className="flex items-center justify-between py-2.5 text-xs">
-                        <span>{log.action}</span>
-                        <span className="font-mono-tabular text-zinc-500">
-                          {formatRelativeTime(log.createdAt)}
-                        </span>
-                      </div>
-                    ))}
+              <div className="grid gap-6 lg:grid-cols-2">
+                {/* Recent Sales (Last 5 Paid Orders) */}
+                <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-[#13131c]">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-display text-sm font-semibold">Recent Sales</h3>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('orders')}
+                      className="text-xs font-semibold text-[var(--kv-accent,#e50914)] hover:underline"
+                    >
+                      View All Orders
+                    </button>
                   </div>
-                )}
+                  {recentSalesLoading ? (
+                    <div className="space-y-2.5">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="h-10 animate-pulse rounded-lg bg-zinc-100 dark:bg-zinc-900"
+                        />
+                      ))}
+                    </div>
+                  ) : recentSales.length === 0 ? (
+                    <p className="py-4 text-xs text-zinc-500">
+                      No paid orders recorded yet. Confirm a pending request or create a manual order in Orders.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                      {recentSales.map((order) => (
+                        <div
+                          key={order.id}
+                          className="flex items-center justify-between gap-3 py-2.5 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold">
+                              {order.userName || order.userEmail}
+                            </p>
+                            <p className="truncate text-[11px] text-zinc-500">
+                              {order.planName} · <span className="uppercase">{order.paymentMethod}</span>
+                            </p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p className="font-mono-tabular font-bold text-emerald-500">
+                              {formatCurrencyAmount(order.amount, order.currency)}
+                            </p>
+                            <p className="font-mono-tabular text-[11px] text-zinc-500">
+                              {formatRelativeTime(order.paidAt || order.createdAt)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Activity */}
+                <div className="rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-[#13131c]">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-display text-sm font-semibold">Recent Admin Activity</h3>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('logs')}
+                      className="text-xs font-semibold text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+                    >
+                      Audit Log
+                    </button>
+                  </div>
+                  {logs.length === 0 ? (
+                    <p className="py-4 text-xs text-zinc-500">
+                      No activity logged yet. Seed the catalog or edit a title to record audit events.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                      {logs.slice(0, 5).map((log) => (
+                        <div key={log.id} className="flex items-center justify-between py-2.5 text-xs">
+                          <span className="truncate pr-3">{log.action}</span>
+                          <span className="font-mono-tabular shrink-0 text-zinc-500">
+                            {formatRelativeTime(log.createdAt)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -930,7 +1244,23 @@ function AdminShell() {
                         </td>
                         <td className="p-3 capitalize">{m.type}</td>
                         <td className="font-mono-tabular p-3">{m.releaseYear}</td>
-                        <td className="p-3 capitalize">{m.status}</td>
+                        <td className="p-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStatusModalMovie(m);
+                              setStatusModalValue(m.status);
+                            }}
+                            className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize ${
+                              m.status === 'published'
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            }`}
+                            title="Change title status"
+                          >
+                            {m.status}
+                          </button>
+                        </td>
                         <td className="font-mono-tabular p-3 text-right">
                           {formatCompactNumber(m.views)}
                         </td>
@@ -1137,7 +1467,7 @@ function AdminShell() {
                             <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500 tabular-nums">
                               <span>{assignedCount} assigned videos</span>
                               <span aria-hidden="true">·</span>
-                              <span>{subscriberCount} active subscribers</span>
+                              <span>{subscriberCount} loaded subscribers</span>
                               {p.features.length > 0 && (
                                 <>
                                   <span aria-hidden="true">·</span>
@@ -1147,7 +1477,20 @@ function AdminShell() {
                             </div>
                           </div>
 
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPricingPlan(p);
+                                setPricingAmount(String(p.pricePerMonth));
+                                setPricingCurrency(p.currency);
+                                setPricingActive(p.isActive);
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                            >
+                              <DollarSign className="h-3.5 w-3.5" />
+                              Edit Pricing
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -1188,11 +1531,7 @@ function AdminShell() {
                             </button>
                             <button
                               type="button"
-                              onClick={async () => {
-                                await deletePlanDoc(p.id, adminProfile.uid);
-                                setPlans((prev) => prev.filter((x) => x.id !== p.id));
-                                notify(`Deleted plan "${p.name}"`, 'success');
-                              }}
+                              onClick={() => setDeletingPlan(p)}
                               aria-label={`Delete plan ${p.name}`}
                               className="rounded p-1.5 text-zinc-400 hover:text-rose-500"
                             >
@@ -1418,6 +1757,16 @@ function AdminShell() {
             </div>
           )}
 
+          {/* 2C. ORDERS & SALES HISTORY */}
+          {activeTab === 'orders' && (
+            <OrdersManager
+              adminUid={adminProfile.uid}
+              plans={plans}
+              onMutateSuccess={() => void refreshLiveMetrics()}
+              onNotify={notify}
+            />
+          )}
+
           {/* 3. EPISODES MANAGER */}
           {activeTab === 'episodes' && (
             <EpisodesManager movies={movies} adminUid={adminProfile.uid} adSettings={adSettings} />
@@ -1641,7 +1990,7 @@ function AdminShell() {
             </div>
           )}
 
-          {/* 6. USERS MANAGEMENT */}
+          {/* 6. USERS MANAGEMENT (CURSOR-PAGINATED 25/PAGE) */}
           {activeTab === 'users' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1650,7 +1999,7 @@ function AdminShell() {
                     type="search"
                     value={userSearch}
                     onChange={(e) => setUserSearch(e.target.value)}
-                    placeholder="Search name or email..."
+                    placeholder="Filter loaded members..."
                     className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs dark:border-zinc-700 dark:bg-[#13131c]"
                   />
                   <select
@@ -1677,23 +2026,50 @@ function AdminShell() {
                   </select>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    const csv = exportUsersToCsv(filteredUsers);
-                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `kinovault-users-${new Date().toISOString().slice(0, 10)}.csv`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3.5 py-2 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Export CSV
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={usersLoading}
+                    onClick={() => void loadFirstUsersPage()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${usersLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
+                  <button
+                    type="button"
+                    disabled={exportingUsersCsv}
+                    onClick={async () => {
+                      setExportingUsersCsv(true);
+                      try {
+                        const res = await exportUsersCsvAndLog({
+                          roleFilter: userRoleFilter,
+                          planFilter: userPlanFilter,
+                          adminUid: adminProfile.uid,
+                        });
+                        const blob = new Blob([res.csv], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `ainame-users-${new Date().toISOString().slice(0, 10)}.csv`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        notify(`Exported ${res.count} users to CSV (logged)`, 'success');
+                      } catch (err) {
+                        notify(
+                          err instanceof Error ? err.message : 'Failed to export users CSV.',
+                          'error'
+                        );
+                      } finally {
+                        setExportingUsersCsv(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3.5 py-2 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {exportingUsersCsv ? 'Exporting...' : 'Export CSV'}
+                  </button>
+                </div>
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#13131c]">
@@ -1710,113 +2086,163 @@ function AdminShell() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                    {filteredUsers.map((u) => (
-                      <tr key={u.uid}>
-                        <td className="p-3">
-                          <p className="font-semibold">{u.displayName}</p>
-                          <p className="text-zinc-500">{u.email}</p>
-                        </td>
-                        <td className="p-3 capitalize">{u.role}</td>
-                        <td className="p-3">
-                          {u.plan === 'premium'
-                            ? u.subscriptionPlanName || 'Premium'
-                            : 'Free'}
-                        </td>
-                        <td className="p-3 capitalize">
-                          <span
-                            className={
-                              u.status === 'banned' ? 'text-rose-500 font-semibold' : 'text-emerald-500'
-                            }
-                          >
-                            {u.status}
-                          </span>
-                        </td>
-                        <td className="font-mono-tabular p-3 text-zinc-500">
-                          {u.createdAt?.slice(0, 10)}
-                        </td>
-                        <td className="font-mono-tabular p-3 text-zinc-500">
-                          {formatRelativeTime(u.lastLoginAt)}
-                        </td>
-                        <td className="p-3 text-right">
-                          <div className="inline-flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const nextPlan = u.plan === 'premium' ? 'free' : 'premium';
-                                const expiry =
-                                  nextPlan === 'premium'
-                                    ? new Date(Date.now() + 365 * 86400_000).toISOString()
-                                    : null;
-                                await updateAdminUserDoc(
-                                  u.uid,
-                                  { plan: nextPlan, planExpiresAt: expiry },
-                                  adminProfile.uid
-                                );
-                                setUsers((prev) =>
-                                  prev.map((x) =>
-                                    x.uid === u.uid ? { ...x, plan: nextPlan, planExpiresAt: expiry } : x
-                                  )
-                                );
-                                notify(`Set ${u.displayName} plan to ${nextPlan}`, 'success');
-                              }}
-                              className="rounded border border-zinc-300 px-2 py-1 text-[11px] dark:border-zinc-700"
-                            >
-                              {u.plan === 'premium' ? 'Set Free' : 'Grant Plus'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const nextRole = u.role === 'admin' ? 'user' : 'admin';
-                                await updateAdminUserDoc(u.uid, { role: nextRole }, adminProfile.uid);
-                                setUsers((prev) =>
-                                  prev.map((x) => (x.uid === u.uid ? { ...x, role: nextRole } : x))
-                                );
-                                notify(`Changed role to ${nextRole}`, 'success');
-                              }}
-                              className="rounded border border-zinc-300 px-2 py-1 text-[11px] dark:border-zinc-700"
-                            >
-                              {u.role === 'admin' ? 'Demote' : 'Make Admin'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const nextStatus = u.status === 'banned' ? 'active' : 'banned';
-                                await updateAdminUserDoc(
-                                  u.uid,
-                                  { status: nextStatus },
-                                  adminProfile.uid
-                                );
-                                setUsers((prev) =>
-                                  prev.map((x) =>
-                                    x.uid === u.uid ? { ...x, status: nextStatus } : x
-                                  )
-                                );
-                                notify(`User ${nextStatus}`, 'info');
-                              }}
-                              className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-amber-500 dark:border-zinc-700"
-                            >
-                              {u.status === 'banned' ? 'Unban' : 'Ban'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await deleteAdminUserDoc(u.uid, adminProfile.uid);
-                                setUsers((prev) => prev.filter((x) => x.uid !== u.uid));
-                                notify('User deleted', 'success');
-                              }}
-                              aria-label={`Delete user ${u.displayName}`}
-                              className="rounded p-1 text-zinc-400 hover:text-rose-500"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                    {usersLoading && users.length === 0 ? (
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i}>
+                          <td colSpan={7} className="p-3">
+                            <div className="h-6 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+                          </td>
+                        </tr>
+                      ))
+                    ) : filteredUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="p-8 text-center text-zinc-500">
+                          No members match the active filters.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredUsers.map((u) => {
+                        const isSelf = u.uid === adminProfile.uid;
+                        return (
+                          <tr key={u.uid}>
+                            <td className="p-3">
+                              <p className="font-semibold">
+                                {u.displayName}
+                                {isSelf && (
+                                  <span className="ml-1.5 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] dark:bg-zinc-800">
+                                    You
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-zinc-500">{u.email}</p>
+                            </td>
+                            <td className="p-3 capitalize">{u.role}</td>
+                            <td className="p-3">
+                              {u.plan === 'premium'
+                                ? u.subscriptionPlanName || 'Premium'
+                                : 'Free'}
+                            </td>
+                            <td className="p-3 capitalize">
+                              <span
+                                className={
+                                  u.status === 'banned'
+                                    ? 'font-semibold text-rose-500'
+                                    : 'text-emerald-500'
+                                }
+                              >
+                                {u.status}
+                              </span>
+                            </td>
+                            <td className="font-mono-tabular p-3 text-zinc-500">
+                              {u.createdAt?.slice(0, 10)}
+                            </td>
+                            <td className="font-mono-tabular p-3 text-zinc-500">
+                              {formatRelativeTime(u.lastLoginAt)}
+                            </td>
+                            <td className="p-3 text-right">
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPendingUserAction({ kind: 'plan', user: u })
+                                  }
+                                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] dark:border-zinc-700"
+                                >
+                                  {u.plan === 'premium' ? 'Set Free' : 'Grant Plus'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSelf && u.role === 'admin'}
+                                  title={
+                                    isSelf && u.role === 'admin'
+                                      ? 'You cannot demote your own admin account'
+                                      : undefined
+                                  }
+                                  onClick={() =>
+                                    setPendingUserAction({ kind: 'role', user: u })
+                                  }
+                                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700"
+                                >
+                                  {u.role === 'admin' ? 'Demote' : 'Make Admin'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSelf}
+                                  onClick={() =>
+                                    setPendingUserAction({ kind: 'status', user: u })
+                                  }
+                                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-amber-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700"
+                                >
+                                  {u.status === 'banned' ? 'Unban' : 'Ban'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSelf}
+                                  title={isSelf ? 'You cannot delete your own account' : undefined}
+                                  onClick={() =>
+                                    setPendingUserAction({ kind: 'delete', user: u })
+                                  }
+                                  aria-label={`Delete user ${u.displayName}`}
+                                  className="rounded p-1 text-zinc-400 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-30"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
+
+              {usersHasMore && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    disabled={usersLoadingMore}
+                    onClick={async () => {
+                      if (!usersCursor || usersLoadingMore) return;
+                      setUsersLoadingMore(true);
+                      try {
+                        const page = await fetchUsersPage({
+                          roleFilter: userRoleFilter,
+                          planFilter: userPlanFilter,
+                          cursor: usersCursor,
+                          pageSize: 25,
+                        });
+                        setUsers((prev) => {
+                          const seen = new Set(prev.map((x) => x.uid));
+                          return [...prev, ...page.items.filter((x) => !seen.has(x.uid))];
+                        });
+                        setUsersCursor(page.lastDoc);
+                        setUsersHasMore(page.hasMore);
+                      } catch (err) {
+                        notify(
+                          err instanceof Error ? err.message : 'Could not load next 25 users.',
+                          'error'
+                        );
+                      } finally {
+                        setUsersLoadingMore(false);
+                      }
+                    }}
+                    className="rounded-lg border border-zinc-300 px-4 py-2 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    {usersLoadingMore ? 'Loading...' : 'Load Next 25 Users'}
+                  </button>
+                </div>
+              )}
             </div>
+          )}
+
+          {/* 6B. BLOG CMS */}
+          {activeTab === 'blog' && (
+            <BlogManager
+              adminUid={adminProfile.uid}
+              onMutateSuccess={() => void refreshLiveMetrics()}
+              onNotify={notify}
+            />
           )}
 
           {/* 7. COMMENTS MODERATION */}
@@ -2165,7 +2591,342 @@ function AdminShell() {
           setMovies((prev) =>
             isNew ? [movie, ...prev] : prev.map((x) => (x.id === movie.id ? movie : x))
           );
+          void refreshLiveMetrics();
           notify(isNew ? `Added "${movie.title}"` : `Updated "${movie.title}"`, 'success');
+        }}
+      />
+
+      {/* Change Title Status Modal */}
+      <Modal
+        open={Boolean(statusModalMovie)}
+        onClose={() => setStatusModalMovie(null)}
+        title="Change Title Status"
+        maxWidthClass="max-w-md"
+      >
+        {statusModalMovie && (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setSavingTitleStatus(true);
+              try {
+                const updated = await updateTitleStatusBatch({
+                  movie: statusModalMovie,
+                  status: statusModalValue,
+                  adminUid: adminProfile.uid,
+                });
+                setMovies((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+                setStatusModalMovie(null);
+                void refreshLiveMetrics();
+                notify(
+                  `"${updated.title}" is now ${updated.status}`,
+                  'success'
+                );
+              } catch (err) {
+                notify(
+                  err instanceof Error ? err.message : 'Could not update title status.',
+                  'error'
+                );
+              } finally {
+                setSavingTitleStatus(false);
+              }
+            }}
+            className="space-y-4 text-sm"
+          >
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Update visibility status for{' '}
+              <span className="font-semibold text-zinc-900 dark:text-white">
+                {statusModalMovie.title}
+              </span>
+              . Published titles count toward live KPIs and appear in the streaming catalog.
+            </p>
+            <div>
+              <label htmlFor="title-status-select" className="mb-1 block text-xs text-zinc-500">
+                Catalog Status
+              </label>
+              <select
+                id="title-status-select"
+                value={statusModalValue}
+                onChange={(e) => setStatusModalValue(e.target.value as TitleStatus)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <option value="published">Published (Live in Catalog)</option>
+                <option value="draft">Draft (Hidden from Viewers)</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setStatusModalMovie(null)}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-xs font-semibold dark:border-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingTitleStatus}
+                className="rounded-lg bg-[var(--kv-accent,#e50914)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {savingTitleStatus ? 'Saving...' : 'Save Status'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Update Plan Pricing Modal */}
+      <Modal
+        open={Boolean(pricingPlan)}
+        onClose={() => setPricingPlan(null)}
+        title="Update Plan Pricing"
+        maxWidthClass="max-w-md"
+      >
+        {pricingPlan && (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const parsed = Number(pricingAmount);
+              if (!Number.isFinite(parsed) || parsed <= 0 || !hasMaxTwoDecimals(parsed)) {
+                notify('Enter a valid monthly price greater than 0 (max 2 decimals).', 'error');
+                return;
+              }
+              setSavingPricing(true);
+              try {
+                const updated = await updatePlanPricingBatch({
+                  plan: pricingPlan,
+                  pricePerMonth: parsed,
+                  currency: pricingCurrency,
+                  isActive: pricingActive,
+                  adminUid: adminProfile.uid,
+                });
+                setPlans((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+                setPricingPlan(null);
+                notify(
+                  `Updated pricing for "${updated.name}" to ${formatMonthlyPrice(
+                    updated.pricePerMonth,
+                    updated.currency
+                  )}`,
+                  'success'
+                );
+              } catch (err) {
+                notify(
+                  err instanceof Error ? err.message : 'Could not update plan pricing.',
+                  'error'
+                );
+              } finally {
+                setSavingPricing(false);
+              }
+            }}
+            className="space-y-4 text-sm"
+          >
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Plan: <span className="font-semibold text-zinc-900 dark:text-white">{pricingPlan.name}</span>.
+              Updates apply atomically and write an audit log entry.
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label htmlFor="quick-plan-price" className="mb-1 block text-xs text-zinc-500">
+                  Monthly Price
+                </label>
+                <input
+                  id="quick-plan-price"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={pricingAmount}
+                  onChange={(e) => setPricingAmount(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-transparent px-3 py-2 text-sm tabular-nums dark:border-zinc-700"
+                />
+              </div>
+              <div>
+                <label htmlFor="quick-plan-currency" className="mb-1 block text-xs text-zinc-500">
+                  Currency
+                </label>
+                <select
+                  id="quick-plan-currency"
+                  value={pricingCurrency}
+                  onChange={(e) => setPricingCurrency(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="GBP">GBP</option>
+                  <option value="INR">INR</option>
+                </select>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-xs font-medium">
+              <input
+                type="checkbox"
+                checked={pricingActive}
+                onChange={(e) => setPricingActive(e.target.checked)}
+                className="accent-[var(--kv-accent,#e50914)]"
+              />
+              <span>Active (visible to users)</span>
+            </label>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPricingPlan(null)}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-xs font-semibold dark:border-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingPricing}
+                className="rounded-lg bg-[var(--kv-accent,#e50914)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {savingPricing ? 'Updating...' : 'Save Pricing'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Delete Plan Confirm */}
+      <ConfirmDialog
+        open={Boolean(deletingPlan)}
+        title="Delete Subscription Plan"
+        message={`Delete "${deletingPlan?.name}"? Existing orders keep their historical plan snapshot, and assigned titles will no longer reference this plan.`}
+        confirmLabel="Delete Plan"
+        danger
+        onCancel={() => setDeletingPlan(null)}
+        onConfirm={async () => {
+          if (!deletingPlan) return;
+          await deletePlanDoc(deletingPlan.id, adminProfile.uid);
+          setPlans((prev) => prev.filter((x) => x.id !== deletingPlan.id));
+          notify(`Deleted plan "${deletingPlan.name}"`, 'success');
+          setDeletingPlan(null);
+        }}
+      />
+
+      {/* User Mutation Confirm */}
+      <ConfirmDialog
+        open={Boolean(pendingUserAction)}
+        title={
+          pendingUserAction?.kind === 'delete'
+            ? 'Delete User Account'
+            : pendingUserAction?.kind === 'role'
+            ? pendingUserAction.user.role === 'admin'
+              ? 'Demote Administrator'
+              : 'Promote to Administrator'
+            : pendingUserAction?.kind === 'status'
+            ? pendingUserAction.user.status === 'banned'
+              ? 'Unban Member'
+              : 'Ban Member'
+            : pendingUserAction?.user.plan === 'premium'
+            ? 'Revoke Plus Subscription'
+            : 'Grant Plus Access'
+        }
+        message={
+          pendingUserAction
+            ? pendingUserAction.kind === 'delete'
+              ? `Permanently delete user document for "${pendingUserAction.user.displayName}" (${pendingUserAction.user.email})? This action is logged and cannot be undone.`
+              : pendingUserAction.kind === 'role'
+              ? `Change role for "${pendingUserAction.user.displayName}" from ${pendingUserAction.user.role} to ${
+                  pendingUserAction.user.role === 'admin' ? 'user' : 'admin'
+                }?`
+              : pendingUserAction.kind === 'status'
+              ? `${pendingUserAction.user.status === 'banned' ? 'Restore access for' : 'Ban'} "${
+                  pendingUserAction.user.displayName
+                }"?`
+              : `${pendingUserAction.user.plan === 'premium' ? 'Set plan to Free for' : 'Grant Plus access to'} "${
+                  pendingUserAction.user.displayName
+                }"?`
+            : ''
+        }
+        confirmLabel={
+          userActionBusy
+            ? 'Applying...'
+            : pendingUserAction?.kind === 'delete'
+            ? 'Delete User'
+            : 'Confirm Change'
+        }
+        danger={
+          pendingUserAction?.kind === 'delete' ||
+          (pendingUserAction?.kind === 'status' && pendingUserAction.user.status !== 'banned')
+        }
+        onCancel={() => {
+          if (!userActionBusy) setPendingUserAction(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingUserAction || userActionBusy) return;
+          const target = pendingUserAction.user;
+          setUserActionBusy(true);
+          try {
+            if (pendingUserAction.kind === 'delete') {
+              await deleteAdminUserBatch({
+                targetUid: target.uid,
+                adminUid: adminProfile.uid,
+              });
+              setUsers((prev) => prev.filter((x) => x.uid !== target.uid));
+              notify(`Deleted user "${target.displayName}"`, 'success');
+            } else if (pendingUserAction.kind === 'plan') {
+              const nextPlan = target.plan === 'premium' ? 'free' : 'premium';
+              const expiry =
+                nextPlan === 'premium'
+                  ? new Date(Date.now() + 30 * 86400_000).toISOString()
+                  : null;
+              await updateAdminUserBatch({
+                targetUid: target.uid,
+                updates: {
+                  plan: nextPlan,
+                  planExpiresAt: expiry,
+                  ...(nextPlan === 'free'
+                    ? { subscriptionPlanId: null, subscriptionPlanName: null }
+                    : {}),
+                },
+                adminUid: adminProfile.uid,
+                action: `admin_set_user_plan:${nextPlan}`,
+              });
+              setUsers((prev) =>
+                prev.map((x) =>
+                  x.uid === target.uid
+                    ? {
+                        ...x,
+                        plan: nextPlan,
+                        planExpiresAt: expiry,
+                        ...(nextPlan === 'free'
+                          ? { subscriptionPlanId: null, subscriptionPlanName: null }
+                          : {}),
+                      }
+                    : x
+                )
+              );
+              notify(`Set ${target.displayName} plan to ${nextPlan}`, 'success');
+            } else if (pendingUserAction.kind === 'role') {
+              const nextRole = target.role === 'admin' ? 'user' : 'admin';
+              await updateAdminUserBatch({
+                targetUid: target.uid,
+                updates: { role: nextRole },
+                adminUid: adminProfile.uid,
+                action: `admin_set_user_role:${nextRole}`,
+              });
+              setUsers((prev) =>
+                prev.map((x) => (x.uid === target.uid ? { ...x, role: nextRole } : x))
+              );
+              notify(`Changed ${target.displayName} role to ${nextRole}`, 'success');
+            } else if (pendingUserAction.kind === 'status') {
+              const nextStatus = target.status === 'banned' ? 'active' : 'banned';
+              await updateAdminUserBatch({
+                targetUid: target.uid,
+                updates: { status: nextStatus },
+                adminUid: adminProfile.uid,
+                action: `admin_set_user_status:${nextStatus}`,
+              });
+              setUsers((prev) =>
+                prev.map((x) => (x.uid === target.uid ? { ...x, status: nextStatus } : x))
+              );
+              notify(`Updated ${target.displayName} status to ${nextStatus}`, 'info');
+            }
+            setPendingUserAction(null);
+            void refreshLiveMetrics();
+          } catch (err) {
+            notify(err instanceof Error ? err.message : 'User update failed.', 'error');
+          } finally {
+            setUserActionBusy(false);
+          }
         }}
       />
 
@@ -2181,6 +2942,7 @@ function AdminShell() {
           if (!deletingMovie) return;
           await deleteMovieDoc(deletingMovie.id, adminProfile.uid);
           setMovies((prev) => prev.filter((x) => x.id !== deletingMovie.id));
+          void refreshLiveMetrics();
           notify(`Deleted "${deletingMovie.title}"`, 'success');
           setDeletingMovie(null);
         }}

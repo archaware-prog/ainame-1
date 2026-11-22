@@ -1,30 +1,64 @@
 import React, { useState } from 'react';
-import { Check, Crown, Film, Lock, ShieldCheck } from 'lucide-react';
-import type { MovieItem, SubscriptionPlan, UserProfile } from '../../types/streaming';
-import { formatMonthlyPrice } from '../../utils/catalog';
+import {
+  Check,
+  Clock,
+  Crown,
+  Film,
+  Lock,
+  Receipt,
+  ShieldCheck,
+} from 'lucide-react';
+import type {
+  MovieItem,
+  OrderItem,
+  OrderPaymentMethod,
+  SubscriptionPlan,
+  UserProfile,
+} from '../../types/streaming';
+import { formatMonthlyPrice, formatRelativeTime } from '../../utils/catalog';
+import { formatCurrencyAmount } from '../../utils/orders';
+import { ConfirmDialog, Modal } from '../ui/Modal';
 
 interface SubscriptionsViewProps {
   plans: SubscriptionPlan[];
   movies: MovieItem[];
   user: UserProfile | null;
+  orders?: OrderItem[];
   highlightedPlanId?: string;
-  onSubscribe: (plan: SubscriptionPlan) => Promise<void>;
+  onRequestSubscription: (
+    plan: SubscriptionPlan,
+    paymentMethod: OrderPaymentMethod,
+    reference?: string
+  ) => Promise<void>;
   onCancelSubscription: () => Promise<void>;
   onOpenAuth: () => void;
   onSelectMovie: (movie: MovieItem) => void;
 }
 
+const ORDER_STATUS_STYLES: Record<OrderItem['paymentStatus'], string> = {
+  pending: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+  paid: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+  failed: 'bg-rose-500/15 text-rose-600 dark:text-rose-400',
+  refunded: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400',
+};
+
 export function SubscriptionsView({
   plans,
   movies,
   user,
+  orders = [],
   highlightedPlanId,
-  onSubscribe,
+  onRequestSubscription,
   onCancelSubscription,
   onOpenAuth,
   onSelectMovie,
 }: SubscriptionsViewProps) {
-  const [busyPlanId, setBusyPlanId] = useState<string | null>(null);
+  const [confirmPlan, setConfirmPlan] = useState<SubscriptionPlan | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<OrderPaymentMethod>('manual');
+  const [reference, setReference] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [requestBanner, setRequestBanner] = useState<string | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [canceling, setCanceling] = useState(false);
 
   const activePlans = plans.filter((p) => p.isActive).sort((a, b) => a.order - b.order);
@@ -35,23 +69,38 @@ export function SubscriptionsView({
       Date.parse(user.planExpiresAt) < Date.now()
   );
 
-  const handleChoosePlan = async (plan: SubscriptionPlan) => {
+  const pendingPlanIds = new Set(
+    orders.filter((o) => o.paymentStatus === 'pending').map((o) => o.planId)
+  );
+
+  const handleChoosePlan = (plan: SubscriptionPlan) => {
     if (!user) {
       onOpenAuth();
       return;
     }
-    setBusyPlanId(plan.id);
+    setPaymentMethod('manual');
+    setReference('');
+    setConfirmPlan(plan);
+  };
+
+  const handleConfirmRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!confirmPlan) return;
+    setSubmitting(true);
     try {
-      await onSubscribe(plan);
+      await onRequestSubscription(confirmPlan, paymentMethod, reference.trim() || undefined);
+      setConfirmPlan(null);
+      setRequestBanner('Request sent, waiting for admin confirmation');
     } finally {
-      setBusyPlanId(null);
+      setSubmitting(false);
     }
   };
 
-  const handleCancel = async () => {
+  const handleConfirmCancel = async () => {
     setCanceling(true);
     try {
       await onCancelSubscription();
+      setCancelOpen(false);
     } finally {
       setCanceling(false);
     }
@@ -69,8 +118,8 @@ export function SubscriptionsView({
             Unlock Exclusive Titles by Plan
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-            Select a monthly subscription tier to watch films and series assigned to that plan.
-            Free catalog titles remain open to everyone.
+            Select a monthly subscription tier to submit an upgrade request. Once payment is
+            confirmed by an administrator, all titles assigned to that plan unlock automatically.
           </p>
         </div>
 
@@ -101,8 +150,8 @@ export function SubscriptionsView({
               <button
                 type="button"
                 disabled={canceling}
-                onClick={handleCancel}
-                className="ml-2 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 whitespace-nowrap"
+                onClick={() => setCancelOpen(true)}
+                className="ml-2 whitespace-nowrap rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
               >
                 {canceling ? 'Canceling...' : 'Cancel Plan'}
               </button>
@@ -110,6 +159,25 @@ export function SubscriptionsView({
           </div>
         )}
       </div>
+
+      {requestBanner && (
+        <div
+          role="status"
+          className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-700 dark:text-amber-300"
+        >
+          <span className="flex items-center gap-2">
+            <Clock className="h-4 w-4 shrink-0" />
+            {requestBanner}
+          </span>
+          <button
+            type="button"
+            onClick={() => setRequestBanner(null)}
+            className="text-xs underline opacity-80 hover:opacity-100"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {activePlans.length === 0 ? (
         <div className="mt-10 rounded-2xl border border-zinc-200 bg-white p-12 text-center dark:border-zinc-800 dark:bg-[#13131c]">
@@ -123,9 +191,9 @@ export function SubscriptionsView({
         <div className="mt-10 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {activePlans.map((plan) => {
             const isCurrent = currentPlanId === plan.id && !isExpired;
+            const hasPending = pendingPlanIds.has(plan.id);
             const isHighlighted = highlightedPlanId === plan.id;
             const assignedMovies = movies.filter((m) => m.requiredPlanId === plan.id);
-            const busy = busyPlanId === plan.id;
 
             return (
               <article
@@ -155,7 +223,7 @@ export function SubscriptionsView({
                       </div>
                     </div>
                     {isCurrent && (
-                      <span className="text-xs font-semibold text-emerald-500 whitespace-nowrap">
+                      <span className="whitespace-nowrap text-xs font-semibold text-emerald-500">
                         Active
                       </span>
                     )}
@@ -216,7 +284,7 @@ export function SubscriptionsView({
                               <p className="truncate text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                                 {m.title}
                               </p>
-                              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 capitalize tabular-nums">
+                              <p className="capitalize text-[11px] text-zinc-500 tabular-nums dark:text-zinc-400">
                                 {m.type} · {m.releaseYear}
                               </p>
                             </div>
@@ -237,25 +305,31 @@ export function SubscriptionsView({
                     <button
                       type="button"
                       disabled
-                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap"
+                      className="flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400"
                     >
                       <Check className="h-4 w-4" />
                       Active Monthly Plan
                     </button>
+                  ) : hasPending ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs font-semibold text-amber-600 dark:text-amber-400"
+                    >
+                      <Clock className="h-4 w-4" />
+                      Waiting for Confirmation
+                    </button>
                   ) : (
                     <button
                       type="button"
-                      disabled={busy}
                       onClick={() => handleChoosePlan(plan)}
-                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--kv-accent,#e50914)] px-4 py-2.5 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+                      className="flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-[var(--kv-accent,#e50914)] px-4 py-2.5 text-xs font-semibold text-white transition-opacity hover:opacity-90"
                     >
                       {!user && <Lock className="h-3.5 w-3.5" />}
-                      {busy
-                        ? 'Activating...'
-                        : !user
+                      {!user
                         ? `Sign In & Subscribe (${formatMonthlyPrice(plan.pricePerMonth, plan.currency)})`
                         : user.plan === 'premium'
-                        ? `Switch to ${plan.name} (${formatMonthlyPrice(plan.pricePerMonth, plan.currency)})`
+                        ? `Request Switch to ${plan.name} (${formatMonthlyPrice(plan.pricePerMonth, plan.currency)})`
                         : `Subscribe Monthly (${formatMonthlyPrice(plan.pricePerMonth, plan.currency)})`}
                     </button>
                   )}
@@ -265,6 +339,160 @@ export function SubscriptionsView({
           })}
         </div>
       )}
+
+      {/* Signed-in user's own order history */}
+      {user && (
+        <section className="mt-12 rounded-2xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-[#13131c]">
+          <div className="flex items-center justify-between gap-3 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <Receipt className="h-4 w-4 text-[var(--kv-accent,#e50914)]" />
+              <h2 className="font-display text-base font-semibold text-zinc-950 dark:text-white">
+                Your Orders &amp; Billing Requests
+              </h2>
+            </div>
+            <span className="font-mono-tabular text-xs text-zinc-500">
+              {orders.length} {orders.length === 1 ? 'order' : 'orders'}
+            </span>
+          </div>
+
+          {orders.length === 0 ? (
+            <p className="pt-4 text-xs text-zinc-500 dark:text-zinc-400">
+              You have not submitted any subscription requests yet.
+            </p>
+          ) : (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-zinc-200 text-zinc-500 dark:border-zinc-800">
+                  <tr>
+                    <th className="py-2 pr-4">Plan</th>
+                    <th className="py-2 pr-4">Amount</th>
+                    <th className="py-2 pr-4">Method</th>
+                    <th className="py-2 pr-4">Reference</th>
+                    <th className="py-2 pr-4">Status</th>
+                    <th className="py-2 text-right">Requested</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                  {orders.map((ord) => (
+                    <tr key={ord.id}>
+                      <td className="py-2.5 pr-4 font-semibold text-zinc-900 dark:text-zinc-100">
+                        {ord.planName}
+                      </td>
+                      <td className="font-mono-tabular py-2.5 pr-4">
+                        {formatCurrencyAmount(ord.amount, ord.currency)}
+                      </td>
+                      <td className="py-2.5 pr-4 uppercase text-zinc-500">
+                        {ord.paymentMethod}
+                      </td>
+                      <td className="font-mono py-2.5 pr-4 text-zinc-500">
+                        {ord.reference || '—'}
+                      </td>
+                      <td className="py-2.5 pr-4">
+                        <span
+                          className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase ${
+                            ORDER_STATUS_STYLES[ord.paymentStatus]
+                          }`}
+                        >
+                          {ord.paymentStatus}
+                        </span>
+                      </td>
+                      <td className="font-mono-tabular py-2.5 text-right text-zinc-500">
+                        {formatRelativeTime(ord.createdAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Confirm Subscription Request Modal */}
+      <Modal
+        open={Boolean(confirmPlan)}
+        onClose={() => setConfirmPlan(null)}
+        title={`Confirm ${confirmPlan?.name ?? 'Plan'} Request`}
+        maxWidthClass="max-w-md"
+      >
+        {confirmPlan && (
+          <form onSubmit={handleConfirmRequest} className="space-y-4">
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">Selected Monthly Plan</p>
+              <div className="mt-1 flex items-baseline justify-between gap-2">
+                <span className="font-display text-base font-bold">{confirmPlan.name}</span>
+                <span className="font-mono-tabular text-base font-bold text-[var(--kv-accent,#e50914)]">
+                  {formatCurrencyAmount(confirmPlan.pricePerMonth, confirmPlan.currency)}/mo
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                Your order will be created in <strong>pending</strong> status and unlocked as soon
+                as an administrator confirms your payment.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="sub-method" className="mb-1 block text-xs font-medium text-zinc-500">
+                Payment Method
+              </label>
+              <select
+                id="sub-method"
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value as OrderPaymentMethod)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <option value="manual">Manual / Bank Transfer</option>
+                <option value="upi">UPI</option>
+                <option value="card">Card</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="sub-ref" className="mb-1 block text-xs font-medium text-zinc-500">
+                Payment Reference / UTR (optional)
+              </label>
+              <input
+                id="sub-ref"
+                type="text"
+                maxLength={100}
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                placeholder="e.g. UTR-88392019"
+                className="w-full rounded-lg border border-zinc-300 bg-transparent px-3 py-2 text-sm dark:border-zinc-700"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmPlan(null)}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="rounded-lg bg-[var(--kv-accent,#e50914)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {submitting ? 'Submitting...' : 'Submit Order Request'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={cancelOpen}
+        title="Cancel Subscription"
+        message="Are you sure you want to cancel your active monthly plan and switch back to the Free tier?"
+        confirmLabel="Switch to Free"
+        danger
+        loading={canceling}
+        onCancel={() => setCancelOpen(false)}
+        onConfirm={handleConfirmCancel}
+      />
     </div>
   );
 }

@@ -7,31 +7,37 @@ import { ConfirmDialog } from '../ui/Modal';
 interface ProfileViewProps {
   user: UserProfile | null;
   history: WatchHistoryItem[];
+  historyEnabled: boolean;
   moviesMap: Record<string, MovieItem>;
   onOpenAuth: () => void;
   onUpdateProfile: (displayName: string, photoURL: string) => Promise<void>;
   onUploadAvatar: (file: File, onProgress: (pct: number) => void) => Promise<string>;
   onChangePassword: (newPassword: string) => Promise<void>;
+  onToggleHistoryEnabled: (enabled: boolean) => void;
   onRemoveHistoryItem: (movieId: string) => Promise<void>;
   onClearHistory: () => Promise<void>;
   onDeleteAccount: () => Promise<void>;
   onPlayMovie: (movie: MovieItem) => void;
   onManagePlans: () => void;
+  librarySlot?: React.ReactNode;
 }
 
 export function ProfileView({
   user,
   history,
+  historyEnabled,
   moviesMap,
   onOpenAuth,
   onUpdateProfile,
   onUploadAvatar,
   onChangePassword,
+  onToggleHistoryEnabled,
   onRemoveHistoryItem,
   onClearHistory,
   onDeleteAccount,
   onPlayMovie,
   onManagePlans,
+  librarySlot,
 }: ProfileViewProps) {
   const [displayName, setDisplayName] = useState(user?.displayName ?? '');
   const [photoURL, setPhotoURL] = useState(user?.photoURL ?? '');
@@ -103,6 +109,116 @@ export function ProfileView({
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 px-4 py-10 sm:px-6">
+      {librarySlot}
+
+      {/* Watch History */}
+      <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-[#13131c]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
+              <History className="h-4 w-4 text-zinc-400" />
+              Watch History ({history.length})
+            </h2>
+            <span
+              className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                historyEnabled
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+              }`}
+            >
+              {historyEnabled ? 'On' : 'Off'}
+            </span>
+          </div>
+          <div className="flex items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2.5 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              <span>{historyEnabled ? 'History On' : 'History Off'}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={historyEnabled}
+                aria-label="Toggle Watch History"
+                onClick={() => onToggleHistoryEnabled(!historyEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--kv-accent,#e50914)] focus:ring-offset-2 dark:focus:ring-offset-[#13131c] ${
+                  historyEnabled ? 'bg-[var(--kv-accent,#e50914)]' : 'bg-zinc-300 dark:bg-zinc-700'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                    historyEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </label>
+            {history.length > 0 && (
+              <button
+                type="button"
+                onClick={onClearHistory}
+                className="text-xs font-medium text-rose-500 hover:underline"
+              >
+                Clear All History
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!historyEnabled && (
+          <div className="mb-4 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400">
+            Watch history is off by default. Turn it on to record your playback progress and show Continue Watching.
+          </div>
+        )}
+
+        {history.length === 0 ? (
+          historyEnabled ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Titles you watch will appear here so you can resume anytime.
+            </p>
+          ) : null
+        ) : (
+          <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {!historyEnabled && (
+              <p className="pb-2 text-[11px] font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                Saved earlier (recording paused)
+              </p>
+            )}
+            {history.map((item) => {
+              const m = moviesMap[item.movieId];
+              if (!m) return null;
+              return (
+                <div key={item.movieId} className="flex items-center justify-between gap-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => onPlayMovie(m)}
+                    className="flex items-center gap-3 text-left min-w-0"
+                  >
+                    <img
+                      src={m.posterUrl}
+                      alt={m.title}
+                      className="h-14 w-10 shrink-0 rounded object-cover"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate font-display text-sm font-semibold">{m.title}</p>
+                      <p className="font-mono-tabular text-xs text-zinc-500 dark:text-zinc-400">
+                        {formatTimecode(item.progressSeconds)} / {formatTimecode(item.durationSeconds)} ·{' '}
+                        {formatRelativeTime(item.updatedAt)}
+                      </p>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveHistoryItem(item.movieId)}
+                    aria-label={`Remove ${m.title} from watch history`}
+                    className="rounded p-1.5 text-zinc-400 hover:text-rose-500"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Account, Email, Profile & Security */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-6 dark:border-zinc-800">
         <div>
           <h1 className="font-display text-2xl font-bold sm:text-3xl">Account &amp; Profile</h1>
@@ -265,72 +381,10 @@ export function ProfileView({
         </section>
       </div>
 
-      {/* Watch History */}
-      <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-[#13131c]">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
-            <History className="h-4 w-4 text-zinc-400" />
-            Watch History ({history.length})
-          </h2>
-          {history.length > 0 && (
-            <button
-              type="button"
-              onClick={onClearHistory}
-              className="text-xs font-medium text-rose-500 hover:underline"
-            >
-              Clear All History
-            </button>
-          )}
-        </div>
-
-        {history.length === 0 ? (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Titles you watch will appear here so you can resume anytime.
-          </p>
-        ) : (
-          <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {history.map((item) => {
-              const m = moviesMap[item.movieId];
-              if (!m) return null;
-              return (
-                <div key={item.movieId} className="flex items-center justify-between gap-4 py-3">
-                  <button
-                    type="button"
-                    onClick={() => onPlayMovie(m)}
-                    className="flex items-center gap-3 text-left min-w-0"
-                  >
-                    <img
-                      src={m.posterUrl}
-                      alt={m.title}
-                      className="h-14 w-10 shrink-0 rounded object-cover"
-                    />
-                    <div className="min-w-0">
-                      <p className="truncate font-display text-sm font-semibold">{m.title}</p>
-                      <p className="font-mono-tabular text-xs text-zinc-500 dark:text-zinc-400">
-                        {formatTimecode(item.progressSeconds)} / {formatTimecode(item.durationSeconds)} ·{' '}
-                        {formatRelativeTime(item.updatedAt)}
-                      </p>
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveHistoryItem(item.movieId)}
-                    aria-label={`Remove ${m.title} from watch history`}
-                    className="rounded p-1.5 text-zinc-400 hover:text-rose-500"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete Account"
-        message="This permanently deletes your KinoVault account and personal watchlist. This action cannot be undone."
+        message="This permanently deletes your AIname account and personal watchlist. This action cannot be undone."
         confirmLabel="Delete Permanently"
         danger
         loading={deleting}

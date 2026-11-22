@@ -416,7 +416,7 @@ export function MovieFormModal({
               </button>
             </div>
             <p className="text-[11px] text-zinc-500">
-              Paste a YouTube link (watch, youtu.be, shorts, embed), MP4, or HLS (.m3u8) URL. YouTube links play inside KinoVault&apos;s custom player without YouTube controls or end-screen suggestions.
+              Paste a YouTube link (watch, youtu.be, shorts, embed), MP4, or HLS (.m3u8) URL. YouTube links play inside AIname&apos;s custom player without YouTube controls or end-screen suggestions.
             </p>
             {draft.videoSources.map((src, idx) => (
               <div key={idx} className="grid grid-cols-12 gap-2">

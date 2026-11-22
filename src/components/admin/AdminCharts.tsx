@@ -5,16 +5,24 @@ import { formatCompactNumber } from '../../utils/catalog';
 interface AdminChartsProps {
   movies: MovieItem[];
   users: UserProfile[];
+  memberCounts?: {
+    free: number;
+    premium: number;
+  };
 }
 
-export function AdminCharts({ movies, users }: AdminChartsProps) {
+export function AdminCharts({ movies, users, memberCounts }: AdminChartsProps) {
   const topViewed = [...movies]
     .sort((a, b) => b.views - a.views)
     .slice(0, 10);
   const maxViews = Math.max(1, ...topViewed.map((m) => m.views));
 
-  const freeCount = users.filter((u) => u.plan !== 'premium').length;
-  const premiumCount = users.filter((u) => u.plan === 'premium').length;
+  const freeCount = memberCounts
+    ? memberCounts.free
+    : users.filter((u) => u.plan !== 'premium').length;
+  const premiumCount = memberCounts
+    ? memberCounts.premium
+    : users.filter((u) => u.plan === 'premium').length;
   const totalUsers = Math.max(1, freeCount + premiumCount);
   const premiumPct = Math.round((premiumCount / totalUsers) * 100);
 
@@ -97,7 +105,7 @@ export function AdminCharts({ movies, users }: AdminChartsProps) {
           Members by Plan
         </h3>
         <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-          Free vs. KinoVault Plus distribution
+          Free vs. AIname Plus distribution
         </p>
 
         <div className="mt-6 flex items-center justify-center">

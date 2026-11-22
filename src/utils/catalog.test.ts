@@ -11,7 +11,9 @@ import {
   formatRelativeTime,
   formatTimecode,
   getSimilarMovies,
+  getWatchHistoryPreferenceKey,
   getWatchRecommendations,
+  parseWatchHistoryEnabled,
   sanitizeText,
   searchMovies,
   slugify,
@@ -331,4 +333,13 @@ test('formatMonthlyPrice and validateSubscriptionPlanDraft format and validate p
   assert.ok(errs.slug);
   assert.ok(errs.pricePerMonth);
   assert.ok(errs.currency);
+});
+
+test('per-user watch history preference defaults to OFF and scopes by uid', () => {
+  assert.equal(parseWatchHistoryEnabled(null), false);
+  assert.equal(parseWatchHistoryEnabled(undefined), false);
+  assert.equal(parseWatchHistoryEnabled('0'), false);
+  assert.equal(parseWatchHistoryEnabled('1'), true);
+  assert.equal(getWatchHistoryPreferenceKey(null), 'kv_history_enabled_guest');
+  assert.equal(getWatchHistoryPreferenceKey('user-123'), 'kv_history_enabled_user-123');
 });

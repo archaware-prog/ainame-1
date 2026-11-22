@@ -783,7 +783,7 @@ export const TabAdvanced: React.FC<TabAdvancedProps> = ({ settings, onChange, on
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${(settings.siteName || 'kinovault').toLowerCase().replace(/\s+/g, '-')}-customization.json`;
+    a.download = `${(settings.siteName || 'ainame').toLowerCase().replace(/\s+/g, '-')}-customization.json`;
     a.click();
     URL.revokeObjectURL(url);
   };

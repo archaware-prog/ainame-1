@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Modal } from '../ui/Modal';
 
@@ -23,7 +23,9 @@ export function AuthModal({
   onEmailRegister,
   onForgotPassword,
 }: AuthModalProps) {
-  const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'reset'>(
+    allowRegistration ? 'register' : 'login'
+  );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -32,6 +34,14 @@ export function AuthModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setMode(allowRegistration ? 'register' : 'login');
+      setError('');
+      setNotice('');
+    }
+  }, [open, allowRegistration]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,7 +61,7 @@ export function AuthModal({
         setNotice('Password reset email sent.');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Authentication failed.');
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
     }
@@ -64,7 +74,7 @@ export function AuthModal({
       await onGoogleLogin();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google sign-in failed.');
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
     }
@@ -87,9 +97,9 @@ export function AuthModal({
       onClose={onClose}
       title={
         mode === 'login'
-          ? 'Sign In to KinoVault'
+          ? 'Sign In to AIname'
           : mode === 'register'
-          ? 'Create Account'
+          ? 'Create account with AIname'
           : 'Reset Password'
       }
       maxWidthClass="max-w-3xl"
@@ -109,7 +119,7 @@ export function AuthModal({
               className="absolute inset-0"
             >
               <img
-                src="/src/assets/images/anime_catgirl_signin_1794831916571.jpg"
+                src="/assets/aistudio/WhatsApp_Image_2026-11-21_at_6.06.53_PM_dee271d5.jpeg"
                 alt="Anime catgirl companion standing beside sign-in form"
                 referrerPolicy="no-referrer"
                 onError={() => setImgFailed(true)}
@@ -118,13 +128,13 @@ export function AuthModal({
             </motion.div>
           ) : (
             <div className="flex h-full items-center justify-center bg-gradient-to-b from-zinc-900 to-[#0b0b0f] p-6 text-center text-xs text-zinc-400">
-              KinoVault Companion
+              AIname Companion
             </div>
           )}
 
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#0b0b0f] via-[#0b0b0f]/80 to-transparent" />
           <div className="relative z-10 p-4 text-white">
-            <p className="text-xs font-semibold text-rose-300">KinoVault Concierge</p>
+            <p className="text-xs font-semibold text-rose-300">AIname Concierge</p>
             <p className="mt-0.5 text-xs leading-relaxed text-zinc-200">{companionCaption}</p>
           </div>
         </div>
@@ -144,7 +154,11 @@ export function AuthModal({
 
               <div className="flex items-center gap-3 text-xs text-zinc-400">
                 <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-                <span>or sign in with Gmail / email</span>
+                <span>
+                  {mode === 'register'
+                    ? 'or create account with Gmail / email'
+                    : 'or sign in with Gmail / email'}
+                </span>
                 <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
               </div>
             </>
@@ -159,7 +173,6 @@ export function AuthModal({
                 <input
                   id="auth-name"
                   type="text"
-                  required
                   value={displayName}
                   onFocus={() => setFocusedField('name')}
                   onBlur={() => setFocusedField('none')}
@@ -227,23 +240,55 @@ export function AuthModal({
 
           <div className="flex items-center justify-between text-xs text-zinc-500">
             {mode !== 'reset' ? (
-              <button type="button" onClick={() => setMode('reset')} className="hover:underline">
+              <button
+                type="button"
+                onClick={() => {
+                  setError('');
+                  setNotice('');
+                  setMode('reset');
+                }}
+                className="hover:underline"
+              >
                 Forgot password?
               </button>
             ) : (
-              <button type="button" onClick={() => setMode('login')} className="hover:underline">
+              <button
+                type="button"
+                onClick={() => {
+                  setError('');
+                  setNotice('');
+                  setMode('login');
+                }}
+                className="hover:underline"
+              >
                 Back to Sign In
               </button>
             )}
 
             {mode === 'login' && allowRegistration && (
-              <button type="button" onClick={() => setMode('register')} className="hover:underline">
-                Create account
+              <button
+                type="button"
+                onClick={() => {
+                  setError('');
+                  setNotice('');
+                  setMode('register');
+                }}
+                className="hover:underline"
+              >
+                Create account with AIname
               </button>
             )}
             {mode === 'register' && (
-              <button type="button" onClick={() => setMode('login')} className="hover:underline">
-                Already have an account?
+              <button
+                type="button"
+                onClick={() => {
+                  setError('');
+                  setNotice('');
+                  setMode('login');
+                }}
+                className="hover:underline"
+              >
+                I already have an account with AIname
               </button>
             )}
           </div>

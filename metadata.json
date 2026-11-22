@@ -1,5 +1,5 @@
 {
-  "name": "KinoVault — Cinema & Series Streaming Platform",
+  "name": "AIname — Cinema & Series Streaming Platform",
   "description": "A dual-panel movie and series streaming platform with a glassmorphic User Panel and a full-featured Admin Console powered by Firebase.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

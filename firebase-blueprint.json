@@ -405,6 +405,103 @@
         "badgeSettings": { "type": "object" }
       },
       "required": ["adsEnabled", "hideAdsForPremium", "maxAdsPerSession", "minSecondsBetweenVideoAds", "adLabelText", "showAdLabel", "testMode", "defaultDailyCap"]
+    },
+    "LibraryItem": {
+      "title": "LibraryItem",
+      "description": "User saved title in My Library with watching/completed/paused status.",
+      "type": "object",
+      "properties": {
+        "titleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "titleName": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "titleType": { "type": "string", "enum": ["movie", "series"] },
+        "posterUrl": { "type": "string", "maxLength": 1500 },
+        "addedAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["watching", "completed", "paused"] }
+      },
+      "required": ["titleId", "titleName", "titleType", "addedAt", "status"]
+    },
+    "TitleProgress": {
+      "title": "TitleProgress",
+      "description": "Per-title completion progress tracking completed episodes or movie units.",
+      "type": "object",
+      "properties": {
+        "titleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "totalUnits": { "type": "number" },
+        "completedUnits": { "type": "number" },
+        "completedEpisodeIds": { "type": "array" },
+        "progressPercent": { "type": "number" },
+        "lastSeasonId": { "type": "string", "maxLength": 128 },
+        "lastEpisodeId": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 64 }
+      },
+      "required": ["titleId", "totalUnits", "completedUnits", "completedEpisodeIds", "progressPercent", "updatedAt"]
+    },
+    "UserActivity": {
+      "title": "UserActivity",
+      "description": "Append-only user activity timeline entry for watch, completion, rating, and library actions.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["watch", "completed", "rating", "library"] },
+        "titleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "titleName": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "episodeId": { "type": "string", "maxLength": 128 },
+        "durationSeconds": { "type": "number" },
+        "rating": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 64 }
+      },
+      "required": ["type", "titleId", "titleName", "createdAt"]
+    },
+    "Achievement": {
+      "title": "Achievement",
+      "description": "Deterministic achievement issued once per completed title.",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["title_completed"] },
+        "titleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "titleName": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "issuedAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "imageUrl": { "type": "string", "maxLength": 1500 }
+      },
+      "required": ["kind", "titleId", "titleName", "issuedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Subscription order and payment status record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userEmail": { "type": "string", "format": "email", "maxLength": 200 },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "planName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed", "refunded"] },
+        "paymentMethod": { "type": "string", "enum": ["manual", "upi", "card", "other"] },
+        "reference": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "paidAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 64 }
+      },
+      "required": ["userId", "userEmail", "userName", "planId", "planName", "amount", "currency", "paymentStatus", "paymentMethod", "createdAt", "updatedAt"]
+    },
+    "BlogPost": {
+      "title": "BlogPost",
+      "description": "Editorial blog article managed in the Admin Blog CMS.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9-]+$" },
+        "excerpt": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "contentHtml": { "type": "string", "minLength": 1, "maxLength": 50000 },
+        "coverUrl": { "type": "string", "maxLength": 1500 },
+        "status": { "type": "string", "enum": ["draft", "published"] },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "publishedAt": { "type": "string", "format": "date-time", "maxLength": 64 }
+      },
+      "required": ["title", "slug", "excerpt", "contentHtml", "status", "authorUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -431,6 +528,22 @@
     "/users/{uid}/adUnlocks/{contentId}": {
       "schema": { "$ref": "#/entities/AdUnlockRecord" },
       "description": "User per-episode and per-movie ad unlock records."
+    },
+    "/users/{uid}/library/{titleId}": {
+      "schema": { "$ref": "#/entities/LibraryItem" },
+      "description": "User My Library titles and watching/completed/paused status."
+    },
+    "/users/{uid}/progress/{titleId}": {
+      "schema": { "$ref": "#/entities/TitleProgress" },
+      "description": "User episode and unit completion progress per title."
+    },
+    "/users/{uid}/activity/{activityId}": {
+      "schema": { "$ref": "#/entities/UserActivity" },
+      "description": "Append-only timeline of user watch, completion, rating, and library activity."
+    },
+    "/users/{uid}/achievements/{achievementId}": {
+      "schema": { "$ref": "#/entities/Achievement" },
+      "description": "Deterministic achievements issued when a title reaches 100% completion."
     },
     "/movies/{movieId}": {
       "schema": { "$ref": "#/entities/Movie" },
@@ -491,6 +604,14 @@
     "/adSettings/{settingId}": {
       "schema": { "$ref": "#/entities/AdSettings" },
       "description": "Global advertising delivery settings."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Subscription orders created by users or admins."
+    },
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/BlogPost" },
+      "description": "Blog CMS articles published by administrators."
     }
   }
 }

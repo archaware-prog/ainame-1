@@ -20,6 +20,127 @@ import type { ContactMessage, CustomPage } from '../../types/streaming';
 import { formatRelativeTime, slugify } from '../../utils/catalog';
 import { sanitizeHtml } from '../../utils/customization';
 
+export interface RichHtmlEditorBoxProps {
+  value: string;
+  onChange: (next: string) => void;
+  rows?: number;
+}
+
+export const RichHtmlEditorBox: React.FC<RichHtmlEditorBoxProps> = ({
+  value,
+  onChange,
+  rows = 10,
+}) => {
+  const [previewMode, setPreviewMode] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const wrapSelection = (before: string, after: string, placeholder: string) => {
+    const el = textareaRef.current;
+    if (!el) {
+      onChange(`${value}\n${before}${placeholder}${after}`);
+      return;
+    }
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const selected = value.slice(start, end) || placeholder;
+    const next = value.slice(0, start) + before + selected + after + value.slice(end);
+    onChange(next);
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + before.length, start + before.length + selected.length);
+    }, 0);
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-100/80 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            onClick={() => wrapSelection('<h2>', '</h2>', 'Section Heading')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Heading 2"
+          >
+            <Heading2 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<h3>', '</h3>', 'Subheading')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Heading 3"
+          >
+            <Heading3 className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<strong>', '</strong>', 'bold text')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Bold"
+          >
+            <Bold className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<em>', '</em>', 'italic text')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Italic"
+          >
+            <Italic className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<ul>\n  <li>', '</li>\n</ul>', 'List item')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Bullet List"
+          >
+            <List className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<blockquote>', '</blockquote>', 'Quoted note')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Blockquote"
+          >
+            <Quote className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => wrapSelection('<a href="https://example.com">', '</a>', 'Link text')}
+            className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            title="Link"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setPreviewMode((p) => !p)}
+          className="inline-flex items-center gap-1 rounded-md border border-zinc-300 px-2.5 py-1 text-[11px] font-semibold dark:border-zinc-700"
+        >
+          <Eye className="h-3 w-3" />
+          {previewMode ? 'Edit HTML' : 'Sanitized Preview'}
+        </button>
+      </div>
+
+      {previewMode ? (
+        <div
+          className="prose prose-sm min-h-[220px] max-w-none p-4 dark:prose-invert"
+          dangerouslySetInnerHTML={{ __html: sanitizeHtml(value) }}
+        />
+      ) : (
+        <textarea
+          ref={textareaRef}
+          rows={rows}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-transparent p-3.5 font-mono text-xs leading-relaxed focus:outline-none"
+        />
+      )}
+    </div>
+  );
+};
+
 interface RichPageEditorProps {
   pages: CustomPage[];
   messages: ContactMessage[];
@@ -39,9 +160,7 @@ export const RichPageEditor: React.FC<RichPageEditorProps> = ({
 }) => {
   const [subView, setSubView] = useState<'pages' | 'inbox'>('pages');
   const [selectedId, setSelectedId] = useState<string>(pages[0]?.id ?? 'new');
-  const [previewMode, setPreviewMode] = useState(false);
   const [saving, setSaving] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const selectedPage = pages.find((p) => p.id === selectedId) ?? null;
 
@@ -75,23 +194,6 @@ export const RichPageEditor: React.FC<RichPageEditorProps> = ({
     setStatus(page.status);
     setShowInFooter(page.showInFooter);
     setSlugDirty(true);
-  };
-
-  const wrapSelection = (before: string, after: string, placeholder: string) => {
-    const el = textareaRef.current;
-    if (!el) {
-      setContentHtml((c) => `${c}\n${before}${placeholder}${after}`);
-      return;
-    }
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const selected = contentHtml.slice(start, end) || placeholder;
-    const next = contentHtml.slice(0, start) + before + selected + after + contentHtml.slice(end);
-    setContentHtml(next);
-    setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(start + before.length, start + before.length + selected.length);
-    }, 0);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -256,92 +358,7 @@ export const RichPageEditor: React.FC<RichPageEditorProps> = ({
               </label>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-100/80 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="flex flex-wrap items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<h2>', '</h2>', 'Section Heading')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Heading 2"
-                  >
-                    <Heading2 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<h3>', '</h3>', 'Subheading')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Heading 3"
-                  >
-                    <Heading3 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<strong>', '</strong>', 'bold text')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Bold"
-                  >
-                    <Bold className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<em>', '</em>', 'italic text')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Italic"
-                  >
-                    <Italic className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<ul>\n  <li>', '</li>\n</ul>', 'List item')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Bullet List"
-                  >
-                    <List className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<blockquote>', '</blockquote>', 'Quoted note')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Blockquote"
-                  >
-                    <Quote className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => wrapSelection('<a href="https://example.com">', '</a>', 'Link text')}
-                    className="rounded p-1.5 text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    title="Link"
-                  >
-                    <Link2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setPreviewMode((p) => !p)}
-                  className="inline-flex items-center gap-1 rounded-md border border-zinc-300 px-2.5 py-1 text-[11px] font-semibold dark:border-zinc-700"
-                >
-                  <Eye className="h-3 w-3" />
-                  {previewMode ? 'Edit HTML' : 'Sanitized Preview'}
-                </button>
-              </div>
-
-              {previewMode ? (
-                <div
-                  className="prose prose-sm max-w-none p-4 dark:prose-invert min-h-[220px]"
-                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(contentHtml) }}
-                />
-              ) : (
-                <textarea
-                  ref={textareaRef}
-                  rows={10}
-                  value={contentHtml}
-                  onChange={(e) => setContentHtml(e.target.value)}
-                  className="w-full bg-transparent p-3.5 font-mono text-xs leading-relaxed focus:outline-none"
-                />
-              )}
-            </div>
+            <RichHtmlEditorBox value={contentHtml} onChange={setContentHtml} rows={10} />
 
             <div className="flex flex-wrap items-center justify-between gap-2">
               {selectedId !== 'new' && pages.some((p) => p.id === selectedId) ? (

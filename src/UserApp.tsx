@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import {
   auth,
+  buildUserFromAuth,
   cancelUserSubscription,
   clearUserHistory,
   createComment,
@@ -42,23 +43,34 @@ import {
   fetchUserPersonalData,
   incrementMovieViews,
   isUserAdmin,
+  mergeGuestDataOnFirstSignIn,
   registerWithEmail,
   removeUserHistoryItem,
-  saveUserRating,
   saveUserWatchHistory,
   sendResetPassword,
   signInWithEmail,
   signInWithGooglePopup,
   signOutUser,
-  subscribeUserToPlan,
   syncUserProfileOnLogin,
-  testFirestoreConnection,
   toggleUserLike,
   toggleUserWatchlist,
   updateCurrentUserPassword,
   updateOwnUserProfile,
   uploadFileWithProgress,
 } from './lib/firebase';
+import {
+  createPendingOrder,
+  subscribeToPublishedPosts,
+  subscribeToUserOrders,
+} from './lib/ordersFirebase';
+import {
+  rateLibraryTitle,
+  recordUnitCompletionBatch,
+  subscribeToUserAchievements,
+  subscribeToUserActivity,
+  subscribeToUserLibrary,
+  subscribeToUserProgress,
+} from './lib/libraryFirebase';
 import { DEFAULT_SITE_SETTINGS, SEED_COMMENTS, SEED_EPISODES, SEED_PAGES } from './data/seedCatalog';
 import { DEFAULT_AD_SETTINGS } from './data/seedAds';
 import { loadAds, trackAdEvent } from './lib/adsFirebase';
@@ -70,31 +82,47 @@ import {
   subscribeToCrossTabUnlocks,
 } from './lib/unlocksFirebase';
 import type {
+  AchievementItem,
   AdGlobalSettings,
   AdUnlockRecord,
   BannerItem,
+  BlogPostItem,
   CommentItem,
   CustomAdItem,
   CustomCollection,
   CustomPage,
   EpisodeItem,
   GenreItem,
+  LibraryActivityItem,
+  LibraryItem,
   MovieItem,
   NavIconName,
+  OrderItem,
+  OrderPaymentMethod,
   ReportType,
   SeriesEpisodeSummary,
   SiteSettings,
   SocialPlatform,
   SubscriptionPlan,
   TargetPageKey,
+  TitleProgressItem,
   UserProfile,
   VastAdItem,
   WatchHistoryItem,
   WatchlistItem,
 } from './types/streaming';
-import { formatDuration, sanitizeText, searchMovies, slugify, sortMovies } from './utils/catalog';
+import {
+  formatDuration,
+  readWatchHistoryEnabled,
+  sanitizeText,
+  searchMovies,
+  slugify,
+  sortMovies,
+  writeWatchHistoryEnabled,
+} from './utils/catalog';
 import { deriveSeriesAccessSummary } from './utils/access';
 import { detectCurrentDevice } from './utils/adEngine';
+import { getProgressUnitId, isEpisodeCompleted } from './utils/library';
 import {
   buildLinearGradientCss,
   formatCopyrightText,
@@ -105,10 +133,12 @@ import { applySiteCustomizationToDom } from './utils/themeDom';
 import { ToastProvider, useToast } from './components/ui/Toast';
 import { AccessBadges } from './components/user/AccessBadges';
 import { AuthModal } from './components/user/AuthModal';
+import { BlogView } from './components/user/BlogView';
 import { BrowseView } from './components/user/BrowseView';
 import { CustomAdSlot } from './components/user/CustomAdSlot';
 import { CustomPageView } from './components/user/CustomPageView';
 import { DetailsView } from './components/user/DetailsView';
+import { LibraryDashboard } from './components/user/LibraryDashboard';
 import { MovieCard, MovieCardSkeleton } from './components/user/MovieCard';
 import { ProfileView } from './components/user/ProfileView';
 import { AdSlot, CookieConsentBar, SitePopupOverlay } from './components/user/SiteOverlays';
@@ -120,6 +150,8 @@ import { AnimeEntrance } from './components/user/AnimeEntrance';
 interface RouteState {
   page:
     | 'home'
+    | 'dashboard'
+    | 'auth'
     | 'movies'
     | 'series'
     | 'genre'
@@ -128,6 +160,7 @@ interface RouteState {
     | 'watch'
     | 'mylist'
     | 'plans'
+    | 'blog'
     | 'profile'
     | 'page'
     | 'notfound';
@@ -144,13 +177,15 @@ function parseHashRoute(hash: string): RouteState {
   const searchParams = new URLSearchParams(queryPart || '');
 
   if (parts.length === 0 || parts[0] === 'home') return { page: 'home' };
-  if (parts[0] === 'signin' || parts[0] === 'login') return { page: 'home' };
+  if (parts[0] === 'dashboard') return { page: 'dashboard' };
+  if (parts[0] === 'auth' || parts[0] === 'signin' || parts[0] === 'login') return { page: 'auth' };
   if (parts[0] === 'movies') return { page: 'movies' };
   if (parts[0] === 'series') return { page: 'series' };
   if (parts[0] === 'mylist') return { page: 'mylist' };
   if (parts[0] === 'plans' || parts[0] === 'subscriptions') {
     return { page: 'plans', param: searchParams.get('plan') ?? undefined };
   }
+  if (parts[0] === 'blog') return { page: 'blog', param: parts[1] };
   if (parts[0] === 'profile') return { page: 'profile' };
   if (parts[0] === 'search') return { page: 'search', query: searchParams.get('q') ?? '' };
   if (parts[0] === 'genre') return { page: 'genre', param: parts[1] ?? 'all' };
@@ -165,6 +200,20 @@ function parseHashRoute(hash: string): RouteState {
     };
   }
   return { page: 'notfound' };
+}
+
+function parseLocationRoute(): RouteState {
+  if (typeof window === 'undefined') return { page: 'home' };
+  const rawHash = window.location.hash.replace(/^#\/?/, '');
+  if (rawHash) {
+    return parseHashRoute(window.location.hash);
+  }
+  const cleanPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (cleanPath === '/dashboard') return { page: 'dashboard' };
+  if (cleanPath === '/auth' || cleanPath === '/signin' || cleanPath === '/login') {
+    return { page: 'auth' };
+  }
+  return { page: 'home' };
 }
 
 function renderNavIcon(icon: NavIconName, className = 'h-4 w-4') {
@@ -279,7 +328,7 @@ function HorizontalRow({
 
 function UserPanelShell() {
   const { notify } = useToast();
-  const [route, setRoute] = useState<RouteState>(() => parseHashRoute(window.location.hash));
+  const [route, setRoute] = useState<RouteState>(() => parseLocationRoute());
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     document.documentElement.classList.contains('dark') ? 'dark' : 'light'
   );
@@ -306,15 +355,37 @@ function UserPanelShell() {
   const [scrolled, setScrolled] = useState(false);
 
   const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(() => {
     const h = window.location.hash.replace(/^#\/?/, '').split('/')[0];
-    return h === 'signin' || h === 'login';
+    const p = window.location.pathname.replace(/\/+$/, '') || '/';
+    return (
+      h === 'signin' ||
+      h === 'login' ||
+      h === 'auth' ||
+      p === '/auth' ||
+      p === '/signin' ||
+      p === '/login'
+    );
   });
   const [showEntrance, setShowEntrance] = useState(() => {
     try {
       const h = window.location.hash.replace(/^#\/?/, '').split('/')[0];
-      if (h === 'signin' || h === 'login' || h === 'admin') return false;
+      const p = window.location.pathname.replace(/\/+$/, '') || '/';
+      if (
+        h === 'signin' ||
+        h === 'login' ||
+        h === 'auth' ||
+        h === 'dashboard' ||
+        h === 'admin' ||
+        p === '/auth' ||
+        p === '/signin' ||
+        p === '/login' ||
+        p === '/dashboard'
+      ) {
+        return false;
+      }
       return sessionStorage.getItem('kv_intro_seen') !== '1';
     } catch {
       return true;
@@ -336,6 +407,9 @@ function UserPanelShell() {
       return [];
     }
   });
+  const [historyEnabled, setHistoryEnabled] = useState<boolean>(() =>
+    readWatchHistoryEnabled(null)
+  );
   const [ratings, setRatings] = useState<Record<string, number>>(() => {
     try {
       return JSON.parse(localStorage.getItem('kv_guest_ratings') || '{}');
@@ -358,6 +432,18 @@ function UserPanelShell() {
   }));
   const [comments, setComments] = useState<CommentItem[]>([]);
   const viewedSessionRef = useRef<Set<string>>(new Set());
+
+  // My Library Dashboard real-time Firestore state (signed-in users)
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [progressMap, setProgressMap] = useState<Record<string, TitleProgressItem>>({});
+  const [libraryActivity, setLibraryActivity] = useState<LibraryActivityItem[]>([]);
+  const [achievements, setAchievements] = useState<AchievementItem[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [userOrders, setUserOrders] = useState<OrderItem[]>([]);
+  const [publishedPosts, setPublishedPosts] = useState<BlogPostItem[]>([]);
+  const completedUnitsSessionRef = useRef<Set<string>>(new Set());
+  const moviesMapRef = useRef<Record<string, MovieItem>>({});
+  const personalFetchedUidRef = useRef<string | null>(null);
 
   // Ad-unlocks & cross-tab sync + responsive mobile flag
   const [adUnlocks, setAdUnlocks] = useState<Record<string, AdUnlockRecord>>(() =>
@@ -441,23 +527,29 @@ function UserPanelShell() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
-  // Listen to hash routing & online status
+  // Listen to hash/path routing & online status
   useEffect(() => {
-    const checkHashActions = () => {
+    const checkRouteActions = () => {
       const firstSegment = window.location.hash.replace(/^#\/?/, '').split('/')[0];
+      const cleanPath = window.location.pathname.replace(/\/+$/, '') || '/';
       if (firstSegment === 'admin') {
         window.location.href = '/admin.html';
         return;
       }
-      if (firstSegment === 'signin' || firstSegment === 'login') {
+      if (
+        firstSegment === 'signin' ||
+        firstSegment === 'login' ||
+        firstSegment === 'auth' ||
+        (!window.location.hash && (cleanPath === '/auth' || cleanPath === '/signin' || cleanPath === '/login'))
+      ) {
         setAuthModalOpen(true);
       }
     };
-    checkHashActions();
+    checkRouteActions();
 
-    const onHash = () => {
-      checkHashActions();
-      setRoute(parseHashRoute(window.location.hash));
+    const onRouteChange = () => {
+      checkRouteActions();
+      setRoute(parseLocationRoute());
       setMobileMenuOpen(false);
       setGenresMenuOpen(false);
       setProfileMenuOpen(false);
@@ -466,11 +558,13 @@ function UserPanelShell() {
     const onOnline = () => setIsOnline(true);
     const onOffline = () => setIsOnline(false);
 
-    window.addEventListener('hashchange', onHash);
+    window.addEventListener('hashchange', onRouteChange);
+    window.addEventListener('popstate', onRouteChange);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     return () => {
-      window.removeEventListener('hashchange', onHash);
+      window.removeEventListener('hashchange', onRouteChange);
+      window.removeEventListener('popstate', onRouteChange);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
@@ -482,13 +576,12 @@ function UserPanelShell() {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  // Initial catalog, custom pages & settings load
+  // Initial catalog, custom pages & settings load (Auth-only mode: in-memory catalog defaults)
   useEffect(() => {
     let active = true;
     (async () => {
       setCatalogLoading(true);
       try {
-        await testFirestoreConnection();
         const [siteCfg, catalog, pagesList, adsBundle] = await Promise.all([
           fetchSiteSettings(),
           fetchPublishedCatalog(60),
@@ -519,48 +612,242 @@ function UserPanelShell() {
     };
   }, []);
 
-  // Firebase Auth subscription
+  const goToDashboard = useCallback((replace = false) => {
+    if (typeof window !== 'undefined') {
+      if (replace) {
+        window.history.replaceState(null, '', '/dashboard');
+      } else {
+        window.history.pushState(null, '', '/dashboard');
+      }
+    }
+    setAuthModalOpen(false);
+    setRoute({ page: 'dashboard' });
+  }, []);
+
+  const goToAuth = useCallback((replace = false) => {
+    if (typeof window !== 'undefined') {
+      if (replace) {
+        window.history.replaceState(null, '', '/auth');
+      } else {
+        window.history.pushState(null, '', '/auth');
+      }
+    }
+    setRoute({ page: 'auth' });
+    setAuthModalOpen(true);
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    await signOutUser();
+    setProfileMenuOpen(false);
+    goToAuth(false);
+  }, [goToAuth]);
+
+  // Firebase Authentication session listener, Firestore profile sync & route guard
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
+    const unsub = onAuthStateChanged(auth, (u) => {
       setAuthUser(u);
+      setAuthReady(true);
+
+      const cleanPath = window.location.pathname.replace(/\/+$/, '') || '/';
+      const hashFirst = window.location.hash.replace(/^#\/?/, '').split('/')[0];
+
       if (!u) {
         setProfile(null);
+        setHistoryEnabled(readWatchHistoryEnabled(null));
+        setLibrary([]);
+        setProgressMap({});
+        setLibraryActivity([]);
+        setAchievements([]);
+        setUserOrders([]);
+        setLibraryLoading(false);
+        completedUnitsSessionRef.current.clear();
+        personalFetchedUidRef.current = null;
+        try {
+          setWatchlist(JSON.parse(localStorage.getItem('kv_guest_watchlist') || '[]'));
+          setHistory(JSON.parse(localStorage.getItem('kv_guest_history') || '[]'));
+          setRatings(JSON.parse(localStorage.getItem('kv_guest_ratings') || '{}'));
+          setLikes(JSON.parse(localStorage.getItem('kv_guest_likes') || '[]'));
+        } catch {}
         setAdUnlocks(readLocalAdUnlocks());
+        if (cleanPath === '/dashboard' || hashFirst === 'dashboard') {
+          goToAuth(true);
+        }
         return;
       }
-      try {
-        const prof = await syncUserProfileOnLogin(u);
-        setProfile(prof);
-        if (prof.status !== 'banned') {
-          const [personal, mergedUnlocks] = await Promise.all([
-            fetchUserPersonalData(u.uid),
-            fetchUserAdUnlocks(u.uid),
-          ]);
+
+      setHistoryEnabled(readWatchHistoryEnabled(u.uid));
+      setProfile(buildUserFromAuth(u));
+      setAuthModalOpen(false);
+
+      void (async () => {
+        try {
+          const synced = await syncUserProfileOnLogin(u);
+          setProfile(synced);
+        } catch {
+          // Keep Auth-derived session profile when Firestore is unreachable
+        }
+        try {
+          const personal = await fetchUserPersonalData(u.uid);
+          personalFetchedUidRef.current = u.uid;
           setWatchlist(personal.watchlist);
           setHistory(personal.history);
           setRatings(personal.ratings);
           setLikes(personal.likes);
-          setAdUnlocks(mergedUnlocks);
+        } catch {
+          // Keep existing state if Firestore read fails
         }
-      } catch {
-        setProfile({
-          uid: u.uid,
-          displayName: u.displayName || u.email?.split('@')[0] || 'Member',
-          email: u.email || '',
-          photoURL: u.photoURL || '',
-          role: 'user',
-          status: 'active',
-          plan: 'free',
-          subscriptionPlanId: null,
-          subscriptionPlanName: null,
-          planExpiresAt: null,
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        });
+        try {
+          const remoteUnlocks = await fetchUserAdUnlocks(u.uid);
+          setAdUnlocks(remoteUnlocks);
+        } catch {}
+      })();
+
+      const isOnAuthOrRoot =
+        cleanPath === '/auth' ||
+        cleanPath === '/signin' ||
+        cleanPath === '/login' ||
+        hashFirst === 'auth' ||
+        hashFirst === 'signin' ||
+        hashFirst === 'login' ||
+        (cleanPath === '/' && (!hashFirst || hashFirst === 'home'));
+
+      if (isOnAuthOrRoot) {
+        goToDashboard(true);
       }
     });
     return () => unsub();
+  }, [goToAuth, goToDashboard]);
+
+  // One-time guest watchlist & history merge into Firestore after catalog + auth are ready
+  useEffect(() => {
+    if (!authUser || catalogLoading) return;
+    let active = true;
+    (async () => {
+      try {
+        const remote =
+          personalFetchedUidRef.current === authUser.uid
+            ? { watchlist, history }
+            : await fetchUserPersonalData(authUser.uid);
+        if (!active) return;
+        const result = await mergeGuestDataOnFirstSignIn(
+          authUser.uid,
+          moviesMapRef.current,
+          remote
+        );
+        if (!active || !result.merged) return;
+        setWatchlist(result.watchlist);
+        setHistory(result.history);
+        notify('Synced your saved watchlist and history to your account.', 'info');
+      } catch {
+        // Non-fatal if offline or rules not yet deployed
+      }
+    })();
+    return () => {
+      active = false;
+    };
+    // Only trigger when user ID or initial catalog readiness changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.uid, catalogLoading]);
+
+  // Real-time onSnapshot subscriptions for library, progress, and achievements
+  useEffect(() => {
+    if (!authUser) return;
+    setLibraryLoading(true);
+    let libLoaded = false;
+    let progLoaded = false;
+    const markReady = () => {
+      if (libLoaded && progLoaded) {
+        setLibraryLoading(false);
+      }
+    };
+
+    const unsubLib = subscribeToUserLibrary(
+      authUser.uid,
+      (items) => {
+        libLoaded = true;
+        setLibrary(items);
+        markReady();
+      },
+      () => {
+        libLoaded = true;
+        setLibraryLoading(false);
+        notify('Unable to sync library from Firestore.', 'error');
+      }
+    );
+
+    const unsubProg = subscribeToUserProgress(
+      authUser.uid,
+      (map) => {
+        progLoaded = true;
+        setProgressMap(map);
+        markReady();
+      },
+      () => {
+        progLoaded = true;
+        setLibraryLoading(false);
+      }
+    );
+
+    const unsubAch = subscribeToUserAchievements(
+      authUser.uid,
+      (items) => {
+        setAchievements(items);
+      },
+      () => undefined
+    );
+
+    return () => {
+      unsubLib();
+      unsubProg();
+      unsubAch();
+    };
+  }, [authUser?.uid, notify]);
+
+  // Real-time onSnapshot subscription for user watch activity (used for hours-watched stats)
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = subscribeToUserActivity(
+      authUser.uid,
+      null,
+      ({ items }) => {
+        setLibraryActivity(items);
+      },
+      () => undefined
+    );
+    return () => unsub();
+  }, [authUser?.uid]);
+
+  // Real-time orders subscription for signed-in user & published blog posts for everyone
+  useEffect(() => {
+    const unsubPosts = subscribeToPublishedPosts(
+      (posts) => setPublishedPosts(posts),
+      () => undefined
+    );
+    return () => unsubPosts();
   }, []);
+
+  useEffect(() => {
+    if (!authUser) {
+      setUserOrders([]);
+      return;
+    }
+    const unsubOrders = subscribeToUserOrders(
+      authUser.uid,
+      (orders) => setUserOrders(orders),
+      () => undefined
+    );
+    return () => unsubOrders();
+  }, [authUser?.uid]);
+
+  // Enforce route guard whenever route or auth state changes
+  useEffect(() => {
+    if (!authReady) return;
+    if (!authUser && route.page === 'dashboard') {
+      goToAuth(true);
+    } else if (authUser && route.page === 'auth') {
+      goToDashboard(true);
+    }
+  }, [authReady, authUser, route.page, goToAuth, goToDashboard]);
 
   // Navigate helper
   const navigate = useCallback((hash: string) => {
@@ -589,17 +876,19 @@ function UserPanelShell() {
     movies.forEach((m) => {
       map[m.id] = m;
     });
+    moviesMapRef.current = map;
     return map;
   }, [movies]);
 
   const watchlistIds = useMemo(() => new Set(watchlist.map((w) => w.movieId)), [watchlist]);
   const historyMap = useMemo(() => {
+    if (!historyEnabled) return {};
     const map: Record<string, WatchHistoryItem> = {};
     history.forEach((h) => {
       map[h.movieId] = h;
     });
     return map;
-  }, [history]);
+  }, [history, historyEnabled]);
 
   // Resolve current movie for details or watch route
   const activeMovie = useMemo(() => {
@@ -617,6 +906,8 @@ function UserPanelShell() {
   useEffect(() => {
     const routeTitleMap: Record<RouteState['page'], string> = {
       home: settings.siteName,
+      dashboard: 'Dashboard',
+      auth: 'Sign In',
       movies: t('movies', 'Movies'),
       series: t('series', 'Series'),
       genre: genres.find((g) => g.slug === route.param)?.name || 'Genre',
@@ -625,6 +916,7 @@ function UserPanelShell() {
       watch: activeMovie ? `Watch ${activeMovie.title}` : 'Watch',
       mylist: t('mylist', 'My List'),
       plans: t('plans', 'Plans'),
+      blog: 'Blog',
       profile: 'Profile',
       page: activeCustomPage?.title || 'Page',
       notfound: 'Not Found',
@@ -746,30 +1038,76 @@ function UserPanelShell() {
     notify(exists ? `Removed "${movie.title}" from My List` : `Added "${movie.title}" to My List`, 'success');
   };
 
+  const handleToggleHistoryEnabled = useCallback(
+    (enabled: boolean) => {
+      setHistoryEnabled(enabled);
+      writeWatchHistoryEnabled(enabled, authUser?.uid ?? null);
+      notify(enabled ? 'Watch history turned on' : 'Watch history turned off', 'info');
+    },
+    [authUser?.uid, notify]
+  );
+
   const handleSaveProgress = useCallback(
     async (progressSeconds: number, durationSeconds: number, episode?: EpisodeItem | null) => {
       if (!activeMovie) return;
-      const entry: WatchHistoryItem = {
-        movieId: activeMovie.id,
-        progressSeconds: Math.round(progressSeconds),
-        durationSeconds: Math.max(1, Math.round(durationSeconds)),
-        seasonId: episode?.seasonId,
-        episodeId: episode?.id,
-        updatedAt: new Date().toISOString(),
-      };
-      setHistory((prev) => {
-        const filtered = prev.filter((h) => h.movieId !== activeMovie.id);
-        const next = [entry, ...filtered];
-        try {
-          localStorage.setItem('kv_guest_history', JSON.stringify(next));
-        } catch {}
-        return next;
-      });
-      if (authUser) {
-        await saveUserWatchHistory(authUser.uid, entry).catch(() => undefined);
+      if (historyEnabled) {
+        const entry: WatchHistoryItem = {
+          movieId: activeMovie.id,
+          progressSeconds: Math.round(progressSeconds),
+          durationSeconds: Math.max(1, Math.round(durationSeconds)),
+          seasonId: episode?.seasonId,
+          episodeId: episode?.id,
+          updatedAt: new Date().toISOString(),
+        };
+        setHistory((prev) => {
+          const filtered = prev.filter((h) => h.movieId !== activeMovie.id);
+          const next = [entry, ...filtered];
+          try {
+            localStorage.setItem('kv_guest_history', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        if (authUser) {
+          await saveUserWatchHistory(authUser.uid, entry).catch(() => undefined);
+        }
+      }
+      if (!authUser) return;
+
+      if (isEpisodeCompleted(progressSeconds, durationSeconds)) {
+        const unitId = getProgressUnitId(activeMovie, episode);
+        const sessionKey = `${activeMovie.id}:${unitId}`;
+        const existingProgress = progressMap[activeMovie.id];
+        const alreadySaved = existingProgress?.completedEpisodeIds.includes(unitId);
+
+        if (!alreadySaved && !completedUnitsSessionRef.current.has(sessionKey)) {
+          completedUnitsSessionRef.current.add(sessionKey);
+          const totalEps =
+            activeMovie.type === 'series'
+              ? Math.max(episodes.length, (episodesBySeries[activeMovie.id] ?? []).length, 1)
+              : 1;
+          try {
+            const res = await recordUnitCompletionBatch({
+              uid: authUser.uid,
+              movie: activeMovie,
+              episode,
+              totalEpisodesCount: totalEps,
+              durationSeconds,
+              prevProgress: existingProgress,
+              existingLibraryItem: library.find((l) => l.titleId === activeMovie.id),
+            });
+            if (res.achievementIssued) {
+              notify(`Completed "${activeMovie.title}"! Achievement unlocked.`, 'success');
+            } else {
+              notify(`Progress saved for "${activeMovie.title}".`, 'success');
+            }
+          } catch {
+            completedUnitsSessionRef.current.delete(sessionKey);
+            notify('Could not save completion progress.', 'error');
+          }
+        }
       }
     },
-    [activeMovie, authUser]
+    [activeMovie, authUser, episodes.length, episodesBySeries, historyEnabled, library, notify, progressMap]
   );
 
   const handleToggleLike = async (movie: MovieItem) => {
@@ -791,13 +1129,28 @@ function UserPanelShell() {
   };
 
   const handleRate = async (movie: MovieItem, value: number) => {
+    const prevRating = ratings[movie.id];
     const nextRatings = { ...ratings, [movie.id]: value };
     setRatings(nextRatings);
     try {
       localStorage.setItem('kv_guest_ratings', JSON.stringify(nextRatings));
     } catch {}
     if (authUser) {
-      await saveUserRating(authUser.uid, movie.id, value).catch(() => undefined);
+      try {
+        await rateLibraryTitle(authUser.uid, movie, value);
+      } catch {
+        setRatings((curr) => {
+          const rollback = { ...curr };
+          if (typeof prevRating === 'number') {
+            rollback[movie.id] = prevRating;
+          } else {
+            delete rollback[movie.id];
+          }
+          return rollback;
+        });
+        notify('Could not save rating to Firestore.', 'error');
+        return;
+      }
     }
     notify(`Rated "${movie.title}" ${value}/5 stars`, 'success');
   };
@@ -861,19 +1214,27 @@ function UserPanelShell() {
     [authUser?.uid, notify]
   );
 
-  const handleSubscribePlan = async (plan: SubscriptionPlan) => {
+  const handleRequestSubscription = async (
+    plan: SubscriptionPlan,
+    paymentMethod: OrderPaymentMethod,
+    reference?: string
+  ) => {
     if (!authUser || !profile) {
       setAuthModalOpen(true);
       return;
     }
     try {
-      const updated = await subscribeUserToPlan(authUser.uid, plan);
-      setProfile((prev) => (prev ? { ...prev, ...updated } : prev));
+      await createPendingOrder({
+        user: profile,
+        plan,
+        paymentMethod,
+        reference,
+      });
       trackAdEvent(
         {
           adId: plan.id,
           adKind: 'gate',
-          event: 'subscribe_convert',
+          event: 'subscribe_click',
           contentId: activeMovie?.id || 'plans',
           contentType: activeMovie?.type === 'series' ? 'tvshow' : 'movie',
           placement: 'plans',
@@ -882,10 +1243,10 @@ function UserPanelShell() {
         },
         adSettings.testMode
       );
-      notify(`Subscribed to ${plan.name}. Assigned videos are now unlocked!`, 'success');
+      notify('Request sent, waiting for admin confirmation', 'success');
     } catch {
       notify(
-        'Unable to activate plan in Firestore. Ensure an admin has saved this plan to the database.',
+        'Unable to submit subscription order. Ensure the selected plan is active.',
         'error'
       );
     }
@@ -912,6 +1273,21 @@ function UserPanelShell() {
     }
   };
 
+  const handleFinishEntrance = useCallback(() => {
+    setShowEntrance(false);
+    try {
+      sessionStorage.setItem('kv_intro_seen', '1');
+    } catch {}
+  }, []);
+
+  if (!authReady && route.page === 'dashboard') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0b0b0f] text-sm text-zinc-400">
+        Verifying session...
+      </div>
+    );
+  }
+
   // Banned screen
   if (profile?.status === 'banned') {
     return (
@@ -924,7 +1300,7 @@ function UserPanelShell() {
           </p>
           <button
             type="button"
-            onClick={() => signOutUser()}
+            onClick={() => void handleLogout()}
             className="mt-6 rounded-lg border border-zinc-700 px-5 py-2 text-sm font-medium hover:bg-zinc-800"
           >
             Sign Out
@@ -986,9 +1362,11 @@ function UserPanelShell() {
   }
 
   // Derived Home rows
-  const continueWatchingMovies = history
-    .map((h) => moviesMap[h.movieId])
-    .filter((m): m is MovieItem => Boolean(m));
+  const continueWatchingMovies = historyEnabled
+    ? history
+        .map((h) => moviesMap[h.movieId])
+        .filter((m): m is MovieItem => Boolean(m))
+    : [];
   const trendingMovies = movies.filter((m) => m.isTrending);
   const featuredMovies = movies.filter((m) => m.isFeatured);
   const topRatedMovies = sortMovies(movies, 'rating');
@@ -1069,13 +1447,6 @@ function UserPanelShell() {
       : null;
 
   const myListMovies = movies.filter((m) => watchlistIds.has(m.id));
-
-  const handleFinishEntrance = useCallback(() => {
-    setShowEntrance(false);
-    try {
-      sessionStorage.setItem('kv_intro_seen', '1');
-    } catch {}
-  }, []);
 
   const cardWidthClass =
     homeCfg?.cardSize === 'compact'
@@ -1412,7 +1783,7 @@ function UserPanelShell() {
                       )}
                       <button
                         type="button"
-                        onClick={() => signOutUser()}
+                        onClick={() => void handleLogout()}
                         className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-rose-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                       >
                         <LogOut className="h-3.5 w-3.5" />
@@ -1489,12 +1860,14 @@ function UserPanelShell() {
                   {g.name}
                 </a>
               ))}
-              <a
-                href="/admin.html"
-                className="col-span-2 rounded-lg px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              >
-                Admin Console
-              </a>
+              {isUserAdmin(profile, authUser) && (
+                <a
+                  href="/admin.html"
+                  className="col-span-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--kv-accent,#e50914)] hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                >
+                  Admin Console
+                </a>
+              )}
             </div>
           </div>
         )}
@@ -1504,7 +1877,7 @@ function UserPanelShell() {
       <main className="flex-1">
         <AdSlot config={settings.ads?.header} label="Header banner" />
 
-        {route.page === 'home' && (() => {
+        {(route.page === 'home' || (route.page === 'dashboard' && Boolean(authUser)) || route.page === 'auth') && (() => {
           const heroSection = homeCfg?.sections.find((s) => s.kind === 'hero');
           const showHero = heroSection ? heroSection.visible : true;
           const heroHeight = homeCfg?.heroHeightPx ?? 540;
@@ -1714,6 +2087,26 @@ function UserPanelShell() {
                 ) : null
               )}
 
+              {/* Dashboard on Signed-In /dashboard View */}
+              {route.page === 'dashboard' && profile && (
+                <LibraryDashboard
+                  user={profile}
+                  movies={movies}
+                  moviesMap={moviesMap}
+                  library={library}
+                  watchlistIds={watchlistIds}
+                  progressMap={progressMap}
+                  activity={libraryActivity}
+                  achievements={achievements}
+                  ratings={ratings}
+                  loading={libraryLoading}
+                  onToggleWatchlist={handleToggleWatchlist}
+                  onRateTitle={handleRate}
+                  onPlayMovie={(m) => handlePlayMovie(m)}
+                  onSelectMovie={handleSelectMovie}
+                />
+              )}
+
               {/* Banner Custom Ad Below Hero Spotlight */}
               {customAds.length > 0 && (
                 <div className="mx-auto max-w-7xl px-4 pt-6 sm:px-6">
@@ -1919,6 +2312,7 @@ function UserPanelShell() {
             title={t('mylist', 'My List')}
             subtitle="Titles saved to watch later."
             movies={myListMovies}
+            quickAddCatalog={movies}
             genres={genres}
             loading={catalogLoading}
             watchlistIds={watchlistIds}
@@ -1943,11 +2337,21 @@ function UserPanelShell() {
             plans={plans}
             movies={movies}
             user={profile}
+            orders={userOrders}
             highlightedPlanId={route.param}
-            onSubscribe={handleSubscribePlan}
+            onRequestSubscription={handleRequestSubscription}
             onCancelSubscription={handleCancelSubscription}
             onOpenAuth={() => setAuthModalOpen(true)}
             onSelectMovie={handleSelectMovie}
+          />
+        )}
+
+        {route.page === 'blog' && (
+          <BlogView
+            posts={publishedPosts}
+            activeSlug={route.param}
+            onSelectPost={(slug) => navigate(`/blog/${slug}`)}
+            onBackToList={() => navigate('/blog')}
           />
         )}
 
@@ -2053,6 +2457,7 @@ function UserPanelShell() {
           <ProfileView
             user={profile}
             history={history}
+            historyEnabled={historyEnabled}
             moviesMap={moviesMap}
             onOpenAuth={() => setAuthModalOpen(true)}
             onUpdateProfile={async (name, photo) => {
@@ -2073,6 +2478,7 @@ function UserPanelShell() {
               await updateCurrentUserPassword(pw);
               notify('Password updated', 'success');
             }}
+            onToggleHistoryEnabled={handleToggleHistoryEnabled}
             onRemoveHistoryItem={async (movieId) => {
               setHistory((prev) => prev.filter((h) => h.movieId !== movieId));
               if (authUser) await removeUserHistoryItem(authUser.uid, movieId);
@@ -2094,6 +2500,26 @@ function UserPanelShell() {
             }}
             onPlayMovie={handlePlayMovie}
             onManagePlans={() => navigate('/plans')}
+            librarySlot={
+              profile ? (
+                <LibraryDashboard
+                  user={profile}
+                  movies={movies}
+                  moviesMap={moviesMap}
+                  library={library}
+                  watchlistIds={watchlistIds}
+                  progressMap={progressMap}
+                  activity={libraryActivity}
+                  achievements={achievements}
+                  ratings={ratings}
+                  loading={libraryLoading}
+                  onToggleWatchlist={handleToggleWatchlist}
+                  onRateTitle={handleRate}
+                  onPlayMovie={(m) => handlePlayMovie(m)}
+                  onSelectMovie={handleSelectMovie}
+                />
+              ) : undefined
+            }
           />
         )}
 
@@ -2223,10 +2649,10 @@ function UserPanelShell() {
                 </div>
                 <div className="flex flex-wrap items-center gap-4">
                   <a
-                    href="/admin.html"
+                    href="#/blog"
                     className="font-medium text-zinc-700 transition-colors hover:text-[var(--kv-accent,#e50914)] dark:text-zinc-200"
                   >
-                    Admin Console
+                    Blog
                   </a>
                   <button
                     type="button"
@@ -2284,18 +2710,27 @@ function UserPanelShell() {
         open={authModalOpen}
         allowRegistration={settings.allowRegistration}
         allowSocialLogin={featureFlags?.socialLogin !== false}
-        onClose={() => setAuthModalOpen(false)}
+        onClose={() => {
+          setAuthModalOpen(false);
+          if (!auth.currentUser && window.location.pathname === '/auth') {
+            window.history.replaceState(null, '', '/');
+            setRoute({ page: 'home' });
+          }
+        }}
         onGoogleLogin={async () => {
           await signInWithGooglePopup();
+          goToDashboard(false);
           notify('Signed in with Google', 'success');
         }}
         onEmailLogin={async (e, p) => {
           await signInWithEmail(e, p);
+          goToDashboard(false);
           notify('Signed in', 'success');
         }}
         onEmailRegister={async (e, p, name) => {
           await registerWithEmail(e, p, name);
-          notify('Account created. Verification email sent.', 'success');
+          goToDashboard(false);
+          notify('Account created', 'success');
         }}
         onForgotPassword={async (e) => {
           await sendResetPassword(e);

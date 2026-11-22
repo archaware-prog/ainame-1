@@ -740,4 +740,107 @@ export interface SeriesEpisodeSummary {
   totalEpisodes: number;
 }
 
+// --- My Library Dashboard (users/{uid}/ subcollections) ---
 
+export type LibraryStatus = 'watching' | 'completed' | 'paused';
+
+export interface LibraryItem {
+  titleId: string;
+  titleName: string;
+  titleType: TitleType;
+  posterUrl?: string;
+  addedAt: string;
+  status: LibraryStatus;
+}
+
+export interface TitleProgressItem {
+  titleId: string;
+  totalUnits: number;
+  completedUnits: number;
+  completedEpisodeIds: string[];
+  progressPercent: number;
+  lastSeasonId?: string | null;
+  lastEpisodeId?: string | null;
+  updatedAt: string;
+}
+
+export type LibraryActivityType = 'watch' | 'completed' | 'rating' | 'library';
+
+export interface LibraryActivityItem {
+  id: string;
+  type: LibraryActivityType;
+  titleId: string;
+  titleName: string;
+  episodeId?: string;
+  durationSeconds?: number;
+  rating?: number;
+  createdAt: string;
+}
+
+export type AchievementKind = 'title_completed';
+
+export interface AchievementItem {
+  id: string;
+  kind: AchievementKind;
+  titleId: string;
+  titleName: string;
+  issuedAt: string;
+  imageUrl?: string;
+}
+
+export interface LibraryStats {
+  totalTitles: number;
+  completedTitles: number;
+  hoursWatched: number;
+  achievementsCount: number;
+}
+
+// --- Orders, Revenue & Blog CMS ---
+
+export type OrderPaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+export type OrderPaymentMethod = 'manual' | 'upi' | 'card' | 'other';
+
+export interface OrderItem {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  planId: string;
+  planName: string;
+  amount: number;
+  currency: string;
+  paymentStatus: OrderPaymentStatus;
+  paymentMethod: OrderPaymentMethod;
+  reference?: string | null;
+  createdAt: string;
+  paidAt?: string | null;
+  updatedAt: string;
+}
+
+export type BlogPostStatus = 'draft' | 'published';
+
+export interface BlogPostItem {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string;
+  contentHtml: string;
+  coverUrl?: string | null;
+  status: BlogPostStatus;
+  authorUid: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string | null;
+}
+
+export interface AdminLiveMetrics {
+  publishedTitles: number;
+  totalStudents: number;
+  newStudents7d: number;
+  totalRevenue: number;
+  refundedTotal: number;
+  primaryCurrency: string;
+  newOrdersToday: number;
+  pendingOrdersCount: number;
+  lastUpdatedAt: string | null;
+}
