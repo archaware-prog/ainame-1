@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import {
   AlertTriangle,
   Bookmark,
@@ -64,12 +65,16 @@ import {
   subscribeToUserOrders,
 } from './lib/ordersFirebase';
 import {
+  addTitleToLibrary,
+  fetchMoreUserActivity,
   rateLibraryTitle,
   recordUnitCompletionBatch,
+  removeTitleFromLibrary,
   subscribeToUserAchievements,
   subscribeToUserActivity,
   subscribeToUserLibrary,
   subscribeToUserProgress,
+  updateLibraryStatus,
 } from './lib/libraryFirebase';
 import { DEFAULT_SITE_SETTINGS, SEED_COMMENTS, SEED_EPISODES, SEED_PAGES } from './data/seedCatalog';
 import { DEFAULT_AD_SETTINGS } from './data/seedAds';
@@ -95,6 +100,7 @@ import type {
   GenreItem,
   LibraryActivityItem,
   LibraryItem,
+  LibraryStatus,
   MovieItem,
   NavIconName,
   OrderItem,
@@ -437,6 +443,10 @@ function UserPanelShell() {
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [progressMap, setProgressMap] = useState<Record<string, TitleProgressItem>>({});
   const [libraryActivity, setLibraryActivity] = useState<LibraryActivityItem[]>([]);
+  const [activityCursor, setActivityCursor] = useState<QueryDocumentSnapshot | null>(null);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityLoadingMore, setActivityLoadingMore] = useState(false);
+  const [activityTitleFilter, setActivityTitleFilter] = useState<string | null>(null);
   const [achievements, setAchievements] = useState<AchievementItem[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [userOrders, setUserOrders] = useState<OrderItem[]>([]);
@@ -657,6 +667,9 @@ function UserPanelShell() {
         setLibrary([]);
         setProgressMap({});
         setLibraryActivity([]);
+        setActivityCursor(null);
+        setActivityHasMore(false);
+        setActivityTitleFilter(null);
         setAchievements([]);
         setUserOrders([]);
         setLibraryLoading(false);
@@ -803,19 +816,23 @@ function UserPanelShell() {
     };
   }, [authUser?.uid, notify]);
 
-  // Real-time onSnapshot subscription for user watch activity (used for hours-watched stats)
+  // Real-time paginated onSnapshot subscription for user activity (with optional title filter)
   useEffect(() => {
     if (!authUser) return;
     const unsub = subscribeToUserActivity(
       authUser.uid,
-      null,
-      ({ items }) => {
+      activityTitleFilter,
+      ({ items, lastDoc, hasMore }) => {
         setLibraryActivity(items);
+        setActivityCursor(lastDoc);
+        setActivityHasMore(hasMore);
       },
-      () => undefined
+      () => {
+        notify('Unable to load activity timeline.', 'error');
+      }
     );
     return () => unsub();
-  }, [authUser?.uid]);
+  }, [authUser?.uid, activityTitleFilter, notify]);
 
   // Real-time orders subscription for signed-in user & published blog posts for everyone
   useEffect(() => {
@@ -1153,6 +1170,81 @@ function UserPanelShell() {
       }
     }
     notify(`Rated "${movie.title}" ${value}/5 stars`, 'success');
+  };
+
+  const handleAddToLibrary = async (movie: MovieItem, status: LibraryStatus = 'watching') => {
+    if (!authUser) {
+      setAuthModalOpen(true);
+      return;
+    }
+    const prevSnapshot = library;
+    const optimistic: LibraryItem = {
+      titleId: movie.id,
+      titleName: movie.title,
+      titleType: movie.type,
+      posterUrl: movie.posterUrl,
+      addedAt: new Date().toISOString(),
+      status,
+    };
+    setLibrary((curr) => [optimistic, ...curr.filter((item) => item.titleId !== movie.id)]);
+    try {
+      await addTitleToLibrary(authUser.uid, movie, status);
+      notify(`Added "${movie.title}" to My Library`, 'success');
+    } catch (err) {
+      setLibrary(prevSnapshot);
+      notify('Could not add title to My Library.', 'error');
+      throw err;
+    }
+  };
+
+  const handleUpdateLibraryStatus = async (item: LibraryItem, status: LibraryStatus) => {
+    if (!authUser) return;
+    const prevSnapshot = library;
+    setLibrary((curr) =>
+      curr.map((entry) => (entry.titleId === item.titleId ? { ...entry, status } : entry))
+    );
+    try {
+      await updateLibraryStatus(authUser.uid, item, status);
+      notify(`Updated "${item.titleName}" to ${status}`, 'success');
+    } catch {
+      setLibrary(prevSnapshot);
+      notify('Could not update status in Firestore.', 'error');
+    }
+  };
+
+  const handleRemoveFromLibrary = async (item: LibraryItem) => {
+    if (!authUser) return;
+    const prevSnapshot = library;
+    setLibrary((curr) => curr.filter((entry) => entry.titleId !== item.titleId));
+    try {
+      await removeTitleFromLibrary(authUser.uid, item.titleId);
+      notify(`Removed "${item.titleName}" from My Library`, 'info');
+    } catch {
+      setLibrary(prevSnapshot);
+      notify('Could not remove title from My Library.', 'error');
+    }
+  };
+
+  const handleLoadMoreActivity = async () => {
+    if (!authUser || !activityCursor || activityLoadingMore) return;
+    setActivityLoadingMore(true);
+    try {
+      const nextPage = await fetchMoreUserActivity(
+        authUser.uid,
+        activityCursor,
+        activityTitleFilter
+      );
+      setLibraryActivity((curr) => {
+        const seen = new Set(curr.map((c) => c.id));
+        return [...curr, ...nextPage.items.filter((i) => !seen.has(i.id))];
+      });
+      setActivityCursor(nextPage.lastDoc);
+      setActivityHasMore(nextPage.hasMore);
+    } catch {
+      notify('Could not load older activity.', 'error');
+    } finally {
+      setActivityLoadingMore(false);
+    }
   };
 
   const handleAddComment = async (movieId: string, text: string) => {
@@ -1860,14 +1952,12 @@ function UserPanelShell() {
                   {g.name}
                 </a>
               ))}
-              {isUserAdmin(profile, authUser) && (
-                <a
-                  href="/admin.html"
-                  className="col-span-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--kv-accent,#e50914)] hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                >
-                  Admin Console
-                </a>
-              )}
+              <a
+                href="/admin.html"
+                className="col-span-2 rounded-lg px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                Admin Console
+              </a>
             </div>
           </div>
         )}
@@ -2087,20 +2177,26 @@ function UserPanelShell() {
                 ) : null
               )}
 
-              {/* Dashboard on Signed-In /dashboard View */}
+              {/* My Library Dashboard on Signed-In /dashboard View */}
               {route.page === 'dashboard' && profile && (
                 <LibraryDashboard
                   user={profile}
                   movies={movies}
                   moviesMap={moviesMap}
                   library={library}
-                  watchlistIds={watchlistIds}
                   progressMap={progressMap}
                   activity={libraryActivity}
+                  activityHasMore={activityHasMore}
+                  activityLoadingMore={activityLoadingMore}
+                  activityTitleFilter={activityTitleFilter}
                   achievements={achievements}
                   ratings={ratings}
                   loading={libraryLoading}
-                  onToggleWatchlist={handleToggleWatchlist}
+                  onChangeActivityFilter={setActivityTitleFilter}
+                  onLoadMoreActivity={handleLoadMoreActivity}
+                  onAddToLibrary={handleAddToLibrary}
+                  onUpdateStatus={handleUpdateLibraryStatus}
+                  onRemoveFromLibrary={handleRemoveFromLibrary}
                   onRateTitle={handleRate}
                   onPlayMovie={(m) => handlePlayMovie(m)}
                   onSelectMovie={handleSelectMovie}
@@ -2400,6 +2496,14 @@ function UserPanelShell() {
             onSubscribePrompt={(planId) =>
               navigate(planId ? `/plans?plan=${encodeURIComponent(planId)}` : '/plans')
             }
+            inLibrary={Boolean(authUser && library.some((l) => l.titleId === activeMovie.id))}
+            onAddToLibrary={
+              authUser
+                ? (m) => {
+                    void handleAddToLibrary(m, 'watching');
+                  }
+                : undefined
+            }
           />
         )}
 
@@ -2507,13 +2611,19 @@ function UserPanelShell() {
                   movies={movies}
                   moviesMap={moviesMap}
                   library={library}
-                  watchlistIds={watchlistIds}
                   progressMap={progressMap}
                   activity={libraryActivity}
+                  activityHasMore={activityHasMore}
+                  activityLoadingMore={activityLoadingMore}
+                  activityTitleFilter={activityTitleFilter}
                   achievements={achievements}
                   ratings={ratings}
                   loading={libraryLoading}
-                  onToggleWatchlist={handleToggleWatchlist}
+                  onChangeActivityFilter={setActivityTitleFilter}
+                  onLoadMoreActivity={handleLoadMoreActivity}
+                  onAddToLibrary={handleAddToLibrary}
+                  onUpdateStatus={handleUpdateLibraryStatus}
+                  onRemoveFromLibrary={handleRemoveFromLibrary}
                   onRateTitle={handleRate}
                   onPlayMovie={(m) => handlePlayMovie(m)}
                   onSelectMovie={handleSelectMovie}
@@ -2653,6 +2763,12 @@ function UserPanelShell() {
                     className="font-medium text-zinc-700 transition-colors hover:text-[var(--kv-accent,#e50914)] dark:text-zinc-200"
                   >
                     Blog
+                  </a>
+                  <a
+                    href="/admin.html"
+                    className="font-medium text-zinc-700 transition-colors hover:text-[var(--kv-accent,#e50914)] dark:text-zinc-200"
+                  >
+                    Admin Console
                   </a>
                   <button
                     type="button"
