@@ -1,4 +1,19 @@
 import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  limit,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import { deleteObject, ref } from 'firebase/storage';
+import {
   DEFAULT_AD_SETTINGS,
   SEED_CUSTOM_ADS,
   SEED_VAST_ADS,
@@ -10,12 +25,29 @@ import type {
   VastAdItem,
 } from '../types/streaming';
 import { normalizeAdSettings } from '../utils/access';
+import { db, logAdminAction, OperationType, handleFirestoreError, storage } from './firebase';
 
+const ADS_CACHE_KEY = 'kv_ads_bundle_v1';
+const ADS_CACHE_TTL_MS = 5 * 60 * 1000;
 const DAILY_CAPS_KEY = 'kv_daily_ad_caps_v1';
 const LOCAL_FUNNEL_EVENTS_KEY = 'kv_local_ad_events_v1';
 
+interface CachedAdsBundle {
+  fetchedAt: number;
+  customAds: CustomAdItem[];
+  vastAds: VastAdItem[];
+  adSettings: AdGlobalSettings;
+}
+
+let memoryAdsBundle: CachedAdsBundle | null = null;
+
 export function clearAdsBundleCache(): void {
-  // No remote Firestore cache in Auth-only mode
+  memoryAdsBundle = null;
+  try {
+    sessionStorage.removeItem(ADS_CACHE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 export function getDailyImpressionCounts(): Record<string, number> {
@@ -43,26 +75,141 @@ export function incrementLocalDailyImpression(adId: string): void {
 }
 
 export async function fetchAdSettings(): Promise<AdGlobalSettings> {
-  return normalizeAdSettings(DEFAULT_AD_SETTINGS);
+  try {
+    const snap = await getDoc(doc(db, 'adSettings', 'global'));
+    if (snap.exists()) {
+      return normalizeAdSettings(snap.data() as Partial<AdGlobalSettings>);
+    }
+    return normalizeAdSettings(DEFAULT_AD_SETTINGS);
+  } catch {
+    return normalizeAdSettings(DEFAULT_AD_SETTINGS);
+  }
 }
 
 export async function saveAdSettings(
-  _settings: AdGlobalSettings,
-  _adminUid: string
+  settings: AdGlobalSettings,
+  adminUid: string
 ): Promise<void> {
-  // No Firestore persistence in Auth-only mode
+  try {
+    await setDoc(doc(db, 'adSettings', 'global'), settings);
+    clearAdsBundleCache();
+    await logAdminAction(adminUid, 'Updated global Ad Settings', 'adSettings/global');
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'adSettings/global');
+  }
 }
 
+/**
+ * Loads active ads + global adSettings for the user portal in a single filtered batch,
+ * cached in memory & sessionStorage for 5 minutes.
+ */
 export async function loadAds(): Promise<{
   customAds: CustomAdItem[];
   vastAds: VastAdItem[];
   adSettings: AdGlobalSettings;
 }> {
-  return {
-    customAds: SEED_CUSTOM_ADS,
-    vastAds: SEED_VAST_ADS,
-    adSettings: DEFAULT_AD_SETTINGS,
-  };
+  const now = Date.now();
+  if (memoryAdsBundle && now - memoryAdsBundle.fetchedAt < ADS_CACHE_TTL_MS) {
+    return {
+      customAds: memoryAdsBundle.customAds,
+      vastAds: memoryAdsBundle.vastAds,
+      adSettings: memoryAdsBundle.adSettings,
+    };
+  }
+  try {
+    const raw = sessionStorage.getItem(ADS_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as CachedAdsBundle;
+      if (now - parsed.fetchedAt < ADS_CACHE_TTL_MS) {
+        memoryAdsBundle = parsed;
+        return {
+          customAds: parsed.customAds,
+          vastAds: parsed.vastAds,
+          adSettings: parsed.adSettings,
+        };
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+
+  try {
+    const todayIso = new Date(now - 86400_000).toISOString().slice(0, 10);
+    const [customSnap, vastSnap, adSettings] = await Promise.all([
+      getDocs(
+        query(
+          collection(db, 'customAds'),
+          where('status', '==', 'active'),
+          where('endDate', '>=', todayIso)
+        )
+      ),
+      getDocs(
+        query(
+          collection(db, 'vastAds'),
+          where('status', '==', 'active'),
+          where('endDate', '>=', todayIso)
+        )
+      ),
+      fetchAdSettings(),
+    ]);
+
+    const customAds = customSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<CustomAdItem, 'id'>),
+    }));
+    const vastAds = vastSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<VastAdItem, 'id'>),
+    }));
+
+    let resolvedCustom = customAds;
+    let resolvedVast = vastAds;
+    if (customAds.length === 0 && vastAds.length === 0) {
+      const [anyCustom, anyVast] = await Promise.all([
+        getDocs(query(collection(db, 'customAds'), limit(1))),
+        getDocs(query(collection(db, 'vastAds'), limit(1))),
+      ]);
+      if (anyCustom.empty) resolvedCustom = SEED_CUSTOM_ADS;
+      if (anyVast.empty) resolvedVast = SEED_VAST_ADS;
+    } else {
+      if (!resolvedCustom.some((c) => c.isMandatoryClickBanner)) {
+        resolvedCustom = [
+          ...resolvedCustom,
+          ...SEED_CUSTOM_ADS.filter(
+            (sc) => sc.isMandatoryClickBanner && !resolvedCustom.some((c) => c.id === sc.id)
+          ),
+        ];
+      }
+      if (!resolvedVast.some((v) => v.isUnlockEligible || v.type === 'pre-roll')) {
+        resolvedVast = [
+          ...resolvedVast,
+          ...SEED_VAST_ADS.filter((sv) => !resolvedVast.some((v) => v.id === sv.id)),
+        ];
+      }
+    }
+
+    const bundle: CachedAdsBundle = {
+      fetchedAt: now,
+      customAds: resolvedCustom,
+      vastAds: resolvedVast,
+      adSettings,
+    };
+    memoryAdsBundle = bundle;
+    try {
+      sessionStorage.setItem(ADS_CACHE_KEY, JSON.stringify(bundle));
+    } catch {}
+    return {
+      customAds: bundle.customAds,
+      vastAds: bundle.vastAds,
+      adSettings: bundle.adSettings,
+    };
+  } catch {
+    return {
+      customAds: SEED_CUSTOM_ADS,
+      vastAds: SEED_VAST_ADS,
+      adSettings: DEFAULT_AD_SETTINGS,
+    };
+  }
 }
 
 export async function fetchAllAdsAdminData(): Promise<{
@@ -71,37 +218,124 @@ export async function fetchAllAdsAdminData(): Promise<{
   adEvents: AdEventItem[];
   adSettings: AdGlobalSettings;
 }> {
-  return {
-    customAds: SEED_CUSTOM_ADS,
-    vastAds: SEED_VAST_ADS,
-    adEvents: readLocalFunnelEvents(),
-    adSettings: DEFAULT_AD_SETTINGS,
-  };
+  const [customSnap, vastSnap, eventsSnap, adSettings] = await Promise.all([
+    getDocs(collection(db, 'customAds')),
+    getDocs(collection(db, 'vastAds')),
+    getDocs(query(collection(db, 'adEvents'), limit(300))),
+    fetchAdSettings(),
+  ]);
+
+  const customAds = customSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<CustomAdItem, 'id'>) }))
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const vastAds = vastSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<VastAdItem, 'id'>) }))
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const adEvents = eventsSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<AdEventItem, 'id'>) }))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+
+  return { customAds, vastAds, adEvents, adSettings };
 }
 
 export async function saveCustomAdDoc(
-  _ad: CustomAdItem,
-  _adminUid: string,
-  _isNew: boolean
-): Promise<void> {}
+  ad: CustomAdItem,
+  adminUid: string,
+  isNew: boolean
+): Promise<void> {
+  const { id, ...payload } = ad;
+  try {
+    await setDoc(doc(db, 'customAds', id), payload);
+    clearAdsBundleCache();
+    await logAdminAction(
+      adminUid,
+      `${isNew ? 'Created' : 'Updated'} custom ad "${ad.name}"`,
+      `customAds/${id}`
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `customAds/${id}`);
+  }
+}
 
 export async function deleteCustomAdDoc(
-  _ad: CustomAdItem,
-  _adminUid: string
-): Promise<void> {}
+  ad: CustomAdItem,
+  adminUid: string
+): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'customAds', ad.id));
+    if (ad.imageUrl && ad.imageUrl.includes('firebasestorage.googleapis.com')) {
+      try {
+        await deleteObject(ref(storage, ad.imageUrl));
+      } catch {
+        // Ignore if file already missing
+      }
+    }
+    if (ad.mobileImageUrl && ad.mobileImageUrl.includes('firebasestorage.googleapis.com')) {
+      try {
+        await deleteObject(ref(storage, ad.mobileImageUrl));
+      } catch {
+        // Ignore
+      }
+    }
+    clearAdsBundleCache();
+    await logAdminAction(adminUid, `Deleted custom ad "${ad.name}"`, `customAds/${ad.id}`);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `customAds/${ad.id}`);
+  }
+}
 
 export async function saveVastAdDoc(
-  _ad: VastAdItem,
-  _adminUid: string,
-  _isNew: boolean
-): Promise<void> {}
+  ad: VastAdItem,
+  adminUid: string,
+  isNew: boolean
+): Promise<void> {
+  const { id, ...payload } = ad;
+  try {
+    await setDoc(doc(db, 'vastAds', id), payload);
+    clearAdsBundleCache();
+    await logAdminAction(
+      adminUid,
+      `${isNew ? 'Created' : 'Updated'} VAST ad "${ad.name}"`,
+      `vastAds/${id}`
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `vastAds/${id}`);
+  }
+}
 
 export async function deleteVastAdDoc(
-  _ad: VastAdItem,
-  _adminUid: string
-): Promise<void> {}
+  ad: VastAdItem,
+  adminUid: string
+): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'vastAds', ad.id));
+    clearAdsBundleCache();
+    await logAdminAction(adminUid, `Deleted VAST ad "${ad.name}"`, `vastAds/${ad.id}`);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `vastAds/${ad.id}`);
+  }
+}
 
-export async function seedSampleAdsToFirestore(_adminUid: string): Promise<void> {}
+export async function seedSampleAdsToFirestore(adminUid: string): Promise<void> {
+  const batch = writeBatch(db);
+  for (const ad of SEED_CUSTOM_ADS) {
+    const { id, ...payload } = ad;
+    batch.set(doc(db, 'customAds', id), payload);
+  }
+  for (const ad of SEED_VAST_ADS) {
+    const { id, ...payload } = ad;
+    batch.set(doc(db, 'vastAds', id), payload);
+  }
+  batch.set(doc(db, 'adSettings', 'global'), DEFAULT_AD_SETTINGS);
+  await batch.commit();
+  clearAdsBundleCache();
+  await logAdminAction(adminUid, 'Seeded sample Custom & VAST Ads to Firestore', 'advertising');
+}
+
+// --- Batch AdEvent Queue + Counter Sync ---
+
+let pendingEventQueue: Omit<AdEventItem, 'id'>[] = [];
+let flushTimer: number | null = null;
 
 export function readLocalFunnelEvents(): AdEventItem[] {
   try {
@@ -140,8 +374,59 @@ export function trackAdEvent(
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     ...eventRecord,
   });
+  pendingEventQueue.push(eventRecord);
+  if (pendingEventQueue.length >= 5) {
+    void flushAdEvents();
+  } else if (flushTimer === null && typeof window !== 'undefined') {
+    flushTimer = window.setTimeout(() => {
+      flushTimer = null;
+      void flushAdEvents();
+    }, 2500);
+  }
 }
 
 export async function flushAdEvents(): Promise<void> {
-  // No Firestore writes in Auth-only mode
+  if (pendingEventQueue.length === 0) return;
+  const events = pendingEventQueue.splice(0, 20);
+  const batch = writeBatch(db);
+  const counterDeltas: Record<string, { kind: 'custom' | 'vast'; field: string; inc: number }> = {};
+
+  for (const ev of events) {
+    const id = `adev-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    batch.set(doc(db, 'adEvents', id), ev);
+
+    if (ev.adKind === 'custom' || ev.adKind === 'vast') {
+      const fieldMap: Partial<Record<AdEventItem['event'], string>> = {
+        impression: 'impressions',
+        click: 'clicks',
+        complete: 'completions',
+        banner_complete: 'completions',
+        skip: 'skips',
+        error: 'errors',
+      };
+      const field = fieldMap[ev.event];
+      if (field) {
+        const key = `${ev.adKind}:${ev.adId}:${field}`;
+        if (!counterDeltas[key]) {
+          counterDeltas[key] = { kind: ev.adKind, field, inc: 0 };
+        }
+        counterDeltas[key].inc += 1;
+      }
+    }
+  }
+
+  try {
+    await batch.commit();
+    await Promise.all(
+      Object.entries(counterDeltas).map(([k, delta]) => {
+        const [, adId] = k.split(':');
+        const colName = delta.kind === 'custom' ? 'customAds' : 'vastAds';
+        return updateDoc(doc(db, colName, adId), {
+          [delta.field]: increment(delta.inc),
+        }).catch(() => undefined);
+      })
+    );
+  } catch {
+    // Silent non-blocking analytics failure when running offline/on seed ads
+  }
 }

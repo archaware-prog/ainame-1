@@ -434,28 +434,3 @@ export function calculateDashboardStats(
     newUsersLast7Days: users.filter((u) => Date.parse(u.createdAt) >= sevenDaysAgo).length,
   };
 }
-
-export function getWatchHistoryPreferenceKey(uid?: string | null): string {
-  const cleanUid = (uid ?? '').trim();
-  return cleanUid ? `kv_history_enabled_${cleanUid}` : 'kv_history_enabled_guest';
-}
-
-export function parseWatchHistoryEnabled(raw: string | null | undefined): boolean {
-  return raw === '1';
-}
-
-export function readWatchHistoryEnabled(uid?: string | null): boolean {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return false;
-    return parseWatchHistoryEnabled(window.localStorage.getItem(getWatchHistoryPreferenceKey(uid)));
-  } catch {
-    return false;
-  }
-}
-
-export function writeWatchHistoryEnabled(enabled: boolean, uid?: string | null): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(getWatchHistoryPreferenceKey(uid), enabled ? '1' : '0');
-  } catch {}
-}

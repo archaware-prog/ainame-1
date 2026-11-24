@@ -398,107 +398,6 @@ service cloud.firestore {
         data.method in ['rewarded_ad', 'fallback_once'];
     }
 
-    function isValidLibraryDoc(data, titleId) {
-      return data.keys().hasAll(['titleId', 'titleName', 'titleType', 'addedAt', 'status']) &&
-        data.keys().hasOnly(['titleId', 'titleName', 'titleType', 'posterUrl', 'addedAt', 'status']) &&
-        data.titleId == titleId &&
-        data.titleName is string && data.titleName.size() >= 1 && data.titleName.size() <= 180 &&
-        data.titleType in ['movie', 'series'] &&
-        (!('posterUrl' in data) || (data.posterUrl is string && data.posterUrl.size() <= 1500)) &&
-        data.addedAt is string && data.addedAt.size() >= 8 && data.addedAt.size() <= 64 &&
-        data.status in ['watching', 'completed', 'paused'];
-    }
-
-    function isValidProgressDoc(data, titleId) {
-      return data.keys().hasAll([
-          'titleId', 'totalUnits', 'completedUnits', 'completedEpisodeIds', 'progressPercent', 'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'titleId', 'totalUnits', 'completedUnits', 'completedEpisodeIds',
-          'progressPercent', 'lastSeasonId', 'lastEpisodeId', 'updatedAt'
-        ]) &&
-        data.titleId == titleId &&
-        data.totalUnits is number && data.totalUnits >= 1 && data.totalUnits <= 500 &&
-        data.completedUnits is number && data.completedUnits >= 0 && data.completedUnits <= data.totalUnits &&
-        data.completedEpisodeIds is list && data.completedEpisodeIds.size() <= 500 &&
-        data.completedEpisodeIds.size() == data.completedUnits &&
-        data.progressPercent is number && data.progressPercent >= 0 && data.progressPercent <= 100 &&
-        (!('lastSeasonId' in data) || data.lastSeasonId == null || (data.lastSeasonId is string && data.lastSeasonId.size() <= 128)) &&
-        (!('lastEpisodeId' in data) || data.lastEpisodeId == null || (data.lastEpisodeId is string && data.lastEpisodeId.size() <= 128)) &&
-        data.updatedAt is string && data.updatedAt.size() >= 8 && data.updatedAt.size() <= 64;
-    }
-
-    function isValidActivityDoc(data) {
-      return data.keys().hasAll(['type', 'titleId', 'titleName', 'createdAt']) &&
-        data.keys().hasOnly([
-          'type', 'titleId', 'titleName', 'episodeId', 'durationSeconds', 'rating', 'createdAt'
-        ]) &&
-        data.type in ['watch', 'completed', 'rating', 'library'] &&
-        data.titleId is string && isValidId(data.titleId) &&
-        data.titleName is string && data.titleName.size() >= 1 && data.titleName.size() <= 180 &&
-        (!('episodeId' in data) || data.episodeId == null || (data.episodeId is string && data.episodeId.size() <= 128)) &&
-        (!('durationSeconds' in data) || (data.durationSeconds is number && data.durationSeconds >= 0 && data.durationSeconds <= 86400)) &&
-        (!('rating' in data) || (data.rating is number && data.rating >= 1 && data.rating <= 5)) &&
-        data.createdAt is string && data.createdAt.size() >= 8 && data.createdAt.size() <= 64;
-    }
-
-    function isValidAchievementDoc(data, achievementId) {
-      return data.keys().hasAll(['kind', 'titleId', 'titleName', 'issuedAt']) &&
-        data.keys().hasOnly(['kind', 'titleId', 'titleName', 'issuedAt', 'imageUrl']) &&
-        data.kind in ['title_completed'] &&
-        data.titleId is string && isValidId(data.titleId) &&
-        achievementId == (data.kind + '_' + data.titleId) &&
-        data.titleName is string && data.titleName.size() >= 1 && data.titleName.size() <= 180 &&
-        data.issuedAt is string && data.issuedAt.size() >= 8 && data.issuedAt.size() <= 64 &&
-        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 1500));
-    }
-
-    function isValidOrderDoc(data) {
-      return data.keys().hasAll([
-          'userId', 'userEmail', 'userName', 'planId', 'planName',
-          'amount', 'currency', 'paymentStatus', 'paymentMethod', 'createdAt', 'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'userId', 'userEmail', 'userName', 'planId', 'planName',
-          'amount', 'currency', 'paymentStatus', 'paymentMethod', 'reference',
-          'createdAt', 'paidAt', 'updatedAt'
-        ]) &&
-        data.userId is string && isValidId(data.userId) &&
-        data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 200 &&
-        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
-        data.planId is string && isValidId(data.planId) &&
-        data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 80 &&
-        data.amount is number && data.amount >= 0 && data.amount <= 10000 &&
-        math.abs(data.amount * 100 - math.round(data.amount * 100)) < 0.0001 &&
-        data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 10 &&
-        data.paymentStatus in ['pending', 'paid', 'failed', 'refunded'] &&
-        data.paymentMethod in ['manual', 'upi', 'card', 'other'] &&
-        (!('reference' in data) || data.reference == null || (data.reference is string && data.reference.size() <= 100)) &&
-        data.createdAt is string && data.createdAt.size() >= 8 && data.createdAt.size() <= 64 &&
-        (!('paidAt' in data) || data.paidAt == null || (data.paidAt is string && data.paidAt.size() >= 8 && data.paidAt.size() <= 64)) &&
-        data.updatedAt is string && data.updatedAt.size() >= 8 && data.updatedAt.size() <= 64;
-    }
-
-    function isValidPostDoc(data) {
-      return data.keys().hasAll([
-          'title', 'slug', 'excerpt', 'contentHtml', 'status', 'authorUid', 'createdAt', 'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'title', 'slug', 'excerpt', 'contentHtml', 'coverUrl', 'status',
-          'authorUid', 'createdAt', 'updatedAt', 'publishedAt'
-        ]) &&
-        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
-        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 100 && data.slug.matches('^[a-z0-9-]+$') &&
-        data.excerpt is string && data.excerpt.size() >= 1 && data.excerpt.size() <= 500 &&
-        data.contentHtml is string && data.contentHtml.size() >= 1 && data.contentHtml.size() <= 50000 &&
-        (!('coverUrl' in data) || data.coverUrl == null || (data.coverUrl is string && data.coverUrl.size() <= 1500)) &&
-        data.status in ['draft', 'published'] &&
-        data.authorUid is string && isValidId(data.authorUid) &&
-        data.createdAt is string && data.createdAt.size() >= 8 && data.createdAt.size() <= 64 &&
-        data.updatedAt is string && data.updatedAt.size() >= 8 && data.updatedAt.size() <= 64 &&
-        (!('publishedAt' in data) || data.publishedAt == null || (data.publishedAt is string && data.publishedAt.size() >= 8 && data.publishedAt.size() <= 64));
-    }
-
     // --- Collection Rules ---
 
     // Users collection (PII isolated to owner or admin)
@@ -514,10 +413,7 @@ service cloud.firestore {
         )
       );
       allow update: if isValidId(uid) && isSignedIn() && isValidUserDoc(incoming()) && (
-        (
-          isAdmin() &&
-          !(isOwner(uid) && incoming().role != existing().role)
-        ) || (
+        isAdmin() || (
           isOwner(uid) &&
           isNotBanned() &&
           incoming().role == existing().role &&
@@ -527,21 +423,27 @@ service cloud.firestore {
               incoming().plan == existing().plan &&
               incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastLoginAt'])
             ) ||
+            // Action: Subscribe to an active admin-created monthly plan
+            (
+              incoming().diff(existing()).affectedKeys().hasOnly(['plan', 'subscriptionPlanId', 'subscriptionPlanName', 'planExpiresAt', 'lastLoginAt']) &&
+              incoming().plan == 'premium' &&
+              incoming().subscriptionPlanId is string &&
+              isValidId(incoming().subscriptionPlanId) &&
+              exists(/databases/$(database)/documents/plans/$(incoming().subscriptionPlanId)) &&
+              get(/databases/$(database)/documents/plans/$(incoming().subscriptionPlanId)).data.isActive == true &&
+              incoming().subscriptionPlanName == get(/databases/$(database)/documents/plans/$(incoming().subscriptionPlanId)).data.name
+            ) ||
             // Action: Cancel active subscription back to free
             (
               incoming().diff(existing()).affectedKeys().hasOnly(['plan', 'subscriptionPlanId', 'subscriptionPlanName', 'planExpiresAt', 'lastLoginAt']) &&
               incoming().plan == 'free' &&
               incoming().subscriptionPlanId == null &&
-              incoming().subscriptionPlanName == null &&
-              incoming().planExpiresAt == null
+              incoming().subscriptionPlanName == null
             )
           )
         )
       );
-      allow delete: if isValidId(uid) && (
-        (isOwner(uid) && !isAdmin()) ||
-        (isAdmin() && request.auth.uid != uid)
-      );
+      allow delete: if isValidId(uid) && (isOwner(uid) || isAdmin());
 
       match /watchlist/{movieId} {
         allow read: if isOwner(uid) || isAdmin();
@@ -586,41 +488,6 @@ service cloud.firestore {
         allow create, update: if isValidId(contentId) && isOwner(uid) && isNotBanned() &&
           isValidAdUnlockDoc(incoming(), uid, contentId);
         allow delete: if isValidId(contentId) && (isOwner(uid) || isAdmin());
-      }
-
-      match /library/{titleId} {
-        allow get: if isValidId(titleId) && (isOwner(uid) || isAdmin());
-        allow list: if isOwner(uid) || isAdmin();
-        allow create, update: if isValidId(titleId) && isOwner(uid) && isNotBanned() &&
-          isValidLibraryDoc(incoming(), titleId);
-        allow delete: if isValidId(titleId) && (isOwner(uid) || isAdmin());
-      }
-
-      match /progress/{titleId} {
-        allow get: if isValidId(titleId) && (isOwner(uid) || isAdmin());
-        allow list: if isOwner(uid) || isAdmin();
-        allow create, update: if isValidId(titleId) && isOwner(uid) && isNotBanned() &&
-          isValidProgressDoc(incoming(), titleId);
-        allow delete: if isValidId(titleId) && (isOwner(uid) || isAdmin());
-      }
-
-      match /activity/{activityId} {
-        allow get: if isValidId(activityId) && (isOwner(uid) || isAdmin());
-        allow list: if isOwner(uid) || isAdmin();
-        allow create: if isValidId(activityId) && isOwner(uid) && isNotBanned() &&
-          isValidActivityDoc(incoming());
-        allow update: if false;
-        allow delete: if isValidId(activityId) && isAdmin();
-      }
-
-      match /achievements/{achievementId} {
-        allow get: if isValidId(achievementId) && (isOwner(uid) || isAdmin());
-        allow list: if isOwner(uid) || isAdmin();
-        allow create: if isValidId(achievementId) && isOwner(uid) && isNotBanned() &&
-          isValidAchievementDoc(incoming(), achievementId) &&
-          getAfter(/databases/$(database)/documents/users/$(uid)/progress/$(incoming().titleId)).data.progressPercent == 100;
-        allow update: if false;
-        allow delete: if isValidId(achievementId) && isAdmin();
       }
     }
 
@@ -794,69 +661,6 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isValidId(settingId) && isAdmin() && isValidAdSettingsDoc(incoming());
       allow delete: if isValidId(settingId) && isAdmin();
-    }
-
-    // Orders & Revenue (student creates pending with exact active plan price; admin confirms/fails/refunds)
-    match /orders/{orderId} {
-      allow get: if isValidId(orderId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
-      allow create: if isValidId(orderId) && isValidOrderDoc(incoming()) && (
-        isAdmin() || (
-          isSignedIn() &&
-          isNotBanned() &&
-          incoming().userId == request.auth.uid &&
-          incoming().paymentStatus == 'pending' &&
-          (!('paidAt' in incoming()) || incoming().paidAt == null) &&
-          exists(/databases/$(database)/documents/plans/$(incoming().planId)) &&
-          get(/databases/$(database)/documents/plans/$(incoming().planId)).data.isActive == true &&
-          incoming().amount == get(/databases/$(database)/documents/plans/$(incoming().planId)).data.pricePerMonth &&
-          incoming().currency == get(/databases/$(database)/documents/plans/$(incoming().planId)).data.currency &&
-          incoming().planName == get(/databases/$(database)/documents/plans/$(incoming().planId)).data.name &&
-          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-          incoming().userEmail == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email &&
-          incoming().userName == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.displayName
-        )
-      );
-      allow update: if isValidId(orderId) &&
-        isAdmin() &&
-        isValidOrderDoc(incoming()) &&
-        incoming().userId == existing().userId &&
-        incoming().planId == existing().planId &&
-        incoming().amount == existing().amount &&
-        incoming().currency == existing().currency &&
-        incoming().createdAt == existing().createdAt &&
-        (
-          (existing().paymentStatus == 'pending' && incoming().paymentStatus in ['paid', 'failed']) ||
-          (existing().paymentStatus == 'paid' && incoming().paymentStatus == 'refunded') ||
-          (existing().paymentStatus == 'failed' && incoming().paymentStatus == 'pending')
-        ) &&
-        (incoming().paymentStatus != 'paid' || ('paidAt' in incoming() && incoming().paidAt is string && incoming().paidAt.size() >= 8));
-      allow delete: if false;
-    }
-
-    // Blog CMS Posts (public read published, admin full CRUD)
-    match /posts/{postId} {
-      allow get: if isValidId(postId) && (existing().status == 'published' || isAdmin());
-      allow list: if resource.data.status == 'published' || isAdmin();
-      allow create: if isValidId(postId) && isAdmin() && isValidPostDoc(incoming()) && incoming().authorUid == request.auth.uid;
-      allow update: if isValidId(postId) && isAdmin() && isValidPostDoc(incoming()) &&
-        incoming().authorUid == existing().authorUid &&
-        incoming().createdAt == existing().createdAt;
-      allow delete: if isValidId(postId) && isAdmin();
-    }
-
-    // Admin collection-group reads for My Library subcollections
-    match /{path=**}/library/{docId} {
-      allow read: if isAdmin();
-    }
-    match /{path=**}/progress/{docId} {
-      allow read: if isAdmin();
-    }
-    match /{path=**}/activity/{docId} {
-      allow read: if isAdmin();
-    }
-    match /{path=**}/achievements/{docId} {
-      allow read: if isAdmin();
     }
   }
 }

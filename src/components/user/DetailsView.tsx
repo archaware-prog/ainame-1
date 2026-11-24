@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  BookMarked,
   Check,
   Crown,
   Film,
@@ -80,8 +79,6 @@ interface DetailsViewProps {
   onShare: (movie: MovieItem) => void;
   onOpenAuth: () => void;
   onSubscribePrompt: (planId?: string) => void;
-  inLibrary?: boolean;
-  onAddToLibrary?: (movie: MovieItem) => void;
 }
 
 export function DetailsView({
@@ -117,8 +114,6 @@ export function DetailsView({
   onShare,
   onOpenAuth,
   onSubscribePrompt,
-  inLibrary = false,
-  onAddToLibrary,
 }: DetailsViewProps) {
   const seasons = useMemo(() => {
     const nums = Array.from(new Set(episodes.map((e) => e.seasonNumber))).sort((a, b) => a - b);
@@ -355,22 +350,6 @@ export function DetailsView({
                 >
                   {inWatchlist ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                   {inWatchlist ? 'In My List' : 'My List'}
-                </button>
-              )}
-
-              {user && onAddToLibrary && (
-                <button
-                  type="button"
-                  onClick={() => onAddToLibrary(movie)}
-                  disabled={inLibrary}
-                  className={`inline-flex items-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium backdrop-blur-sm transition-colors whitespace-nowrap ${
-                    inLibrary
-                      ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
-                      : 'border-white/25 bg-white/10 text-white hover:bg-white/20'
-                  }`}
-                >
-                  <BookMarked className="h-4 w-4" />
-                  {inLibrary ? 'In Library' : 'Add to Library'}
                 </button>
               )}
 

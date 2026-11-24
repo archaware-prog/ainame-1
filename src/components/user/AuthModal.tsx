@@ -61,7 +61,7 @@ export function AuthModal({
         setNotice('Password reset email sent.');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      setError(err instanceof Error ? err.message : 'Authentication failed.');
     } finally {
       setBusy(false);
     }
@@ -74,7 +74,7 @@ export function AuthModal({
       await onGoogleLogin();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      setError(err instanceof Error ? err.message : 'Google sign-in failed.');
     } finally {
       setBusy(false);
     }
@@ -119,7 +119,7 @@ export function AuthModal({
               className="absolute inset-0"
             >
               <img
-                src="/assets/aistudio/WhatsApp_Image_2026-11-21_at_6.06.53_PM_dee271d5.jpeg"
+                src="/src/assets/images/anime_catgirl_signin_1794831916571.jpg"
                 alt="Anime catgirl companion standing beside sign-in form"
                 referrerPolicy="no-referrer"
                 onError={() => setImgFailed(true)}
@@ -173,6 +173,7 @@ export function AuthModal({
                 <input
                   id="auth-name"
                   type="text"
+                  required
                   value={displayName}
                   onFocus={() => setFocusedField('name')}
                   onBlur={() => setFocusedField('none')}
@@ -240,54 +241,22 @@ export function AuthModal({
 
           <div className="flex items-center justify-between text-xs text-zinc-500">
             {mode !== 'reset' ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  setMode('reset');
-                }}
-                className="hover:underline"
-              >
+              <button type="button" onClick={() => setMode('reset')} className="hover:underline">
                 Forgot password?
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  setMode('login');
-                }}
-                className="hover:underline"
-              >
+              <button type="button" onClick={() => setMode('login')} className="hover:underline">
                 Back to Sign In
               </button>
             )}
 
             {mode === 'login' && allowRegistration && (
-              <button
-                type="button"
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  setMode('register');
-                }}
-                className="hover:underline"
-              >
+              <button type="button" onClick={() => setMode('register')} className="hover:underline">
                 Create account with AIname
               </button>
             )}
             {mode === 'register' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  setMode('login');
-                }}
-                className="hover:underline"
-              >
+              <button type="button" onClick={() => setMode('login')} className="hover:underline">
                 I already have an account with AIname
               </button>
             )}

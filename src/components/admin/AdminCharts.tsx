@@ -5,24 +5,16 @@ import { formatCompactNumber } from '../../utils/catalog';
 interface AdminChartsProps {
   movies: MovieItem[];
   users: UserProfile[];
-  memberCounts?: {
-    free: number;
-    premium: number;
-  };
 }
 
-export function AdminCharts({ movies, users, memberCounts }: AdminChartsProps) {
+export function AdminCharts({ movies, users }: AdminChartsProps) {
   const topViewed = [...movies]
     .sort((a, b) => b.views - a.views)
     .slice(0, 10);
   const maxViews = Math.max(1, ...topViewed.map((m) => m.views));
 
-  const freeCount = memberCounts
-    ? memberCounts.free
-    : users.filter((u) => u.plan !== 'premium').length;
-  const premiumCount = memberCounts
-    ? memberCounts.premium
-    : users.filter((u) => u.plan === 'premium').length;
+  const freeCount = users.filter((u) => u.plan !== 'premium').length;
+  const premiumCount = users.filter((u) => u.plan === 'premium').length;
   const totalUsers = Math.max(1, freeCount + premiumCount);
   const premiumPct = Math.round((premiumCount / totalUsers) * 100);
 
